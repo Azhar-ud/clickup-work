@@ -1,0 +1,456 @@
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+from clickup_work import __version__
+from clickup_work.claude import build_prompt, launch
+from clickup_work.clickup import ClickUp, ClickUpError, Task
+from clickup_work.config import (
+    CONFIG_PATH,
+    ConfigError,
+    Repo,
+    append_repo_block,
+    load as load_config,
+    resolve_repo,
+    validate_repo_path,
+)
+from clickup_work.git import (
+    GitError,
+    commits_ahead,
+    detect_default_branch,
+    prepare_branch,
+    push_and_open_pr,
+    remote_branch_exists,
+)
+from clickup_work.log import set_verbose
+
+
+MAX_SLUG_LEN = 50
+MIN_SLUG_LEN = 8
+# Clause separators: em-dash and en-dash surrounded by whitespace.
+# Colons are intentionally NOT split on — too often part of real titles.
+_CLAUSE_SEP = re.compile(r"\s+[—–]\s+")
+
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def slug(text: str) -> str:
+    # Keep only the lead clause when the title has em/en-dash subtitle.
+    first_clause = _CLAUSE_SEP.split(text, maxsplit=1)[0]
+    candidate = _slugify(first_clause)
+    # If the lead clause is too short (e.g. "Fix — ..."), use the full title.
+    if len(candidate) < MIN_SLUG_LEN:
+        candidate = _slugify(text)
+    if not candidate:
+        return "task"
+    if len(candidate) <= MAX_SLUG_LEN:
+        return candidate
+    # Truncate at the last word boundary before the limit.
+    truncated = candidate[:MAX_SLUG_LEN]
+    last_dash = truncated.rfind("-")
+    if last_dash >= MIN_SLUG_LEN:
+        truncated = truncated[:last_dash]
+    return truncated.rstrip("-") or "task"
+
+
+def infer_prefix(task_type: str) -> str:
+    """Map a ClickUp task type to a conventional branch prefix."""
+    t = (task_type or "").strip().lower()
+    if "bug" in t or t in {"incident", "issue", "hotfix"}:
+        return "fix"
+    if "chore" in t or t == "task":
+        # Generic "Task" covers most work; treat as feat for a cleaner default.
+        return "feat"
+    if "doc" in t:
+        return "docs"
+    return "feat"
+
+
+def branch_name(task: Task, repo: Repo, cli_prefix: str | None) -> str:
+    prefix = (
+        (cli_prefix or "").strip().strip("/")
+        or repo.branch_prefix
+        or infer_prefix(task.task_type)
+    )
+    return f"{prefix}/{slug(task.name)}"
+
+
+def pr_body(task: Task) -> str:
+    desc = task.description.strip() or "_(no description on ticket)_"
+    return (
+        f"Closes ClickUp task [{task.id}]({task.url}).\n\n"
+        f"## Ticket\n{desc}\n"
+    )
+
+
+def _die(msg: str, code: int = 1) -> int:
+    print(f"error: {msg}", file=sys.stderr)
+    return code
+
+
+def _check_binaries() -> str | None:
+    for bin_name in ("claude", "git", "gh"):
+        if shutil.which(bin_name) is None:
+            return bin_name
+    return None
+
+
+def _format_task_row(i: int, t: Task) -> str:
+    pr = (t.priority or "-").ljust(7)
+    status = t.status.ljust(13)[:13]
+    list_tag = f"[{t.list_name}]" if t.list_name else ""
+    return f"{i}\t{pr}  {status}  {t.name}  {list_tag}"
+
+
+def pick_task(tasks: list[Task]) -> Task | None:
+    """Interactive picker. Returns None if the user cancels."""
+    if not tasks:
+        return None
+    if len(tasks) == 1:
+        return tasks[0]
+
+    if shutil.which("fzf"):
+        return _pick_fzf(tasks)
+    return _pick_numbered(tasks)
+
+
+def _pick_fzf(tasks: list[Task]) -> Task | None:
+    lines = "\n".join(_format_task_row(i, t) for i, t in enumerate(tasks))
+    result = subprocess.run(
+        [
+            "fzf",
+            "--delimiter", "\t",
+            "--with-nth", "2..",
+            "--prompt", "pick a ticket > ",
+            "--height", "40%",
+            "--reverse",
+            "--no-mouse",
+        ],
+        input=lines,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        idx = int(result.stdout.split("\t", 1)[0])
+    except ValueError:
+        return None
+    if 0 <= idx < len(tasks):
+        return tasks[idx]
+    return None
+
+
+def _pick_numbered(tasks: list[Task]) -> Task | None:
+    print("\nOpen tickets assigned to you:\n")
+    for i, t in enumerate(tasks, 1):
+        pr = (t.priority or "-").ljust(7)
+        list_tag = f"  [{t.list_name}]" if t.list_name else ""
+        print(f"  {i:2}. [{pr}] {t.name}{list_tag}")
+    print()
+    while True:
+        try:
+            raw = input("pick a number (or q to quit): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw.lower() in {"q", "quit", ""}:
+            return None
+        try:
+            idx = int(raw) - 1
+        except ValueError:
+            print("  not a number; try again")
+            continue
+        if 0 <= idx < len(tasks):
+            return tasks[idx]
+        print(f"  out of range; choose 1–{len(tasks)}")
+
+
+def _resolve_base_branch(repo: Repo, cli_override: str | None) -> tuple[str, str]:
+    """Return (branch, source) where source explains where it came from."""
+    if cli_override:
+        return cli_override, "--base flag"
+    if repo.base_branch:
+        return repo.base_branch, f"config [repos.{repo.name}].base_branch"
+    detected = detect_default_branch(repo.path)
+    if detected:
+        return detected, "origin/HEAD"
+    raise GitError(
+        f"could not determine base branch for {repo.path}.\n"
+        f"Fix by either:\n"
+        f"  - setting base_branch under [repos.{repo.name}] in config, or\n"
+        f"  - running `git remote set-head origin --auto` in the repo, or\n"
+        f"  - passing --base <branch>"
+    )
+
+
+def _print_plan(task: Task, repo: Repo, base: str, base_source: str, branch: str) -> None:
+    print(f"Ticket:   {task.name}  ({task.id})")
+    print(f"Status:   {task.status}")
+    print(f"Priority: {task.priority or 'unset'}")
+    print(f"List:     {task.list_name}")
+    print(f"URL:      {task.url}")
+    print(f"Repo:     {repo.path}  (nickname: {repo.name})")
+    print(f"Base:     {base}  (resolved from {base_source})")
+    print(f"Branch:   {branch}  →  PR into {base}")
+
+
+def run(
+    dry_run: bool,
+    repo_override: str | None,
+    base_override: str | None,
+    prefix_override: str | None,
+    pick: bool,
+    draft: bool,
+) -> int:
+    token = os.environ.get("CLICKUP_API_TOKEN", "").strip()
+    if not token:
+        return _die(
+            "CLICKUP_API_TOKEN is not set.\n"
+            "Get one at ClickUp → Settings → Apps → API Token, then:\n"
+            "  export CLICKUP_API_TOKEN=pk_xxx..."
+        )
+
+    missing = _check_binaries()
+    if missing:
+        return _die(f"required binary not on PATH: {missing}")
+
+    try:
+        cfg = load_config()
+        repo = resolve_repo(cfg, repo_override)
+    except ConfigError as e:
+        return _die(str(e))
+
+    client = ClickUp(token)
+    try:
+        user_id = client.get_user_id()
+        team_id = cfg.team_id or client.get_first_team_id()
+        tasks = client.get_open_tasks(
+            team_id=team_id,
+            user_id=user_id,
+            list_id=cfg.list_id,
+        )
+    except ClickUpError as e:
+        return _die(str(e))
+
+    if not tasks:
+        print("no open tickets assigned to you (status: to do / in progress)")
+        return 0
+
+    if pick:
+        task = pick_task(tasks)
+        if task is None:
+            print("cancelled.")
+            return 0
+    else:
+        task = tasks[0]
+
+    try:
+        base, base_source = _resolve_base_branch(repo, base_override)
+    except GitError as e:
+        return _die(str(e))
+
+    branch = branch_name(task, repo, prefix_override)
+    _print_plan(task, repo, base, base_source, branch)
+
+    # Safety check: confirm the base actually exists on origin BEFORE any git ops.
+    # This catches typos, renamed defaults, and missing branches.
+    if not remote_branch_exists(repo.path, base):
+        return _die(
+            f"base branch '{base}' does not exist on origin in {repo.path}.\n"
+            f"  Check `git branch -r` or fix base_branch in config / --base flag."
+        )
+
+    if dry_run:
+        print("\n--dry-run: stopping before touching git")
+        return 0
+
+    try:
+        prepare_branch(repo.path, base, branch)
+    except GitError as e:
+        return _die(str(e))
+
+    prompt = build_prompt(task, branch=branch, base_branch=base)
+    print("\nlaunching Claude Code… (exit the session to come back here)\n")
+    exit_code = launch(prompt, cwd=repo.path)
+    print(f"\nclaude exited with status {exit_code}")
+
+    try:
+        ahead = commits_ahead(repo.path, base)
+    except GitError as e:
+        return _die(f"could not count commits: {e}")
+
+    if ahead == 0:
+        print("no new commits on the branch — skipping PR")
+        return 0
+
+    label = "draft PR" if draft else "PR"
+    print(f"{ahead} commit(s) to push; opening {label}…")
+    try:
+        url = push_and_open_pr(
+            repo.path,
+            branch=branch,
+            base_branch=base,
+            title=task.name,
+            body=pr_body(task),
+            draft=draft,
+        )
+    except GitError as e:
+        return _die(str(e))
+
+    print(f"{label.capitalize()} opened: {url}")
+    return 0
+
+
+def _run_cmd(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="clickup-work",
+        description="Pick a ClickUp ticket and start a Claude Code session on it.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="fetch and print the selected ticket without touching git or launching Claude",
+    )
+    parser.add_argument(
+        "--repo",
+        metavar="NAME_OR_PATH",
+        help="repo nickname from config [repos.*], or an absolute/~ path for ad-hoc use",
+    )
+    parser.add_argument(
+        "--base",
+        metavar="BRANCH",
+        help="override base branch for this invocation (wins over config and auto-detect)",
+    )
+    parser.add_argument(
+        "--prefix",
+        metavar="NAME",
+        help="override branch prefix (e.g. feat, fix, chore, docs). "
+             "Wins over repo config and task-type inference.",
+    )
+    parser.add_argument(
+        "-t", "--top",
+        action="store_true",
+        help="skip the picker and auto-select the top-priority ticket",
+    )
+    parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="open the resulting PR as a draft",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="print every API call and git/gh command the tool runs",
+    )
+    parser.add_argument("--version", action="version", version=f"clickup-work {__version__}")
+    args = parser.parse_args(argv)
+    set_verbose(args.verbose)
+    return run(
+        dry_run=args.dry_run,
+        repo_override=args.repo,
+        base_override=args.base,
+        prefix_override=args.prefix,
+        pick=not args.top,
+        draft=args.draft,
+    )
+
+
+def _default_nickname(path: str) -> str:
+    name = os.path.basename(os.path.abspath(os.path.expanduser(path)))
+    # Trim common suffixes that don't add signal to a nickname.
+    for suffix in ("-platform", "-app", "-web", "-service", "-api"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name or "repo"
+
+
+def _prompt(question: str, default: str = "") -> str:
+    suffix = f" [{default}]" if default else ""
+    try:
+        raw = input(f"{question}{suffix}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+    return raw or default
+
+
+def _add_repo_cmd(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="clickup-work add-repo",
+        description="Register a new repo in the clickup-work config.",
+    )
+    parser.add_argument("path", help="absolute or ~ path to an existing git repo")
+    parser.add_argument(
+        "--name",
+        metavar="NICKNAME",
+        help="nickname to use (skips the interactive prompt)",
+    )
+    parser.add_argument(
+        "--base-branch",
+        metavar="BRANCH",
+        help="base branch (skips auto-detect from origin/HEAD)",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="print git commands the tool runs",
+    )
+    args = parser.parse_args(argv)
+    set_verbose(args.verbose)
+
+    try:
+        repo_path = validate_repo_path(args.path)
+    except ConfigError as e:
+        return _die(str(e))
+
+    print(f"Found repo at {repo_path}")
+
+    base = (args.base_branch or "").strip()
+    if not base:
+        detected = detect_default_branch(repo_path)
+        if not detected:
+            return _die(
+                "could not auto-detect default branch "
+                "(`git symbolic-ref refs/remotes/origin/HEAD` failed).\n"
+                "Pass --base-branch <branch> explicitly."
+            )
+        base = detected
+        print(f"Detected default branch: {base}")
+
+    default_name = args.name or _default_nickname(str(repo_path))
+    if args.name:
+        nickname = args.name.strip()
+    else:
+        nickname = _prompt("Nickname for this repo", default_name)
+    if not nickname:
+        return _die("no nickname given; aborting.")
+    if not re.fullmatch(r"[a-z0-9_-]+", nickname):
+        return _die(
+            f"nickname '{nickname}' contains invalid characters "
+            "(allowed: lowercase a-z, 0-9, '-', '_')."
+        )
+
+    try:
+        append_repo_block(nickname, str(repo_path), base)
+    except ConfigError as e:
+        return _die(str(e))
+
+    print(f"Added [repos.{nickname}] to {CONFIG_PATH}")
+    print(f"Now run: clickup-work --repo {nickname}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    if argv and argv[0] == "add-repo":
+        return _add_repo_cmd(argv[1:])
+    return _run_cmd(argv)

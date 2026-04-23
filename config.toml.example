@@ -1,0 +1,34 @@
+# clickup-work configuration.
+# Copy to ~/.config/clickup-work/config.toml and edit.
+
+# Nickname used when --repo is omitted. Leave blank to always require --repo.
+default_repo = ""
+
+# ClickUp filters.
+# Leave team_id blank to auto-detect from your API token.
+# Set list_id to restrict ticket selection to one ClickUp list.
+team_id = ""
+list_id = ""
+
+# Define one block per repo you work on.
+# `path` is required. `base_branch` is strongly recommended (no guessing).
+# `branch_prefix` is optional — when omitted, the tool infers from the
+# ClickUp task type ("Bug" -> fix, everything else -> feat).
+
+[repos.example]
+path          = "/absolute/path/to/your/repo"
+base_branch   = "main"
+# branch_prefix = "feat"
+
+# Example for a repo with a staging-first workflow:
+#
+# [repos.api]
+# path        = "/home/you/projects/api"
+# base_branch = "staging"
+#
+# Example forcing every branch in this repo to start with `cleanup/`:
+#
+# [repos.legacy]
+# path          = "/home/you/projects/legacy"
+# base_branch   = "main"
+# branch_prefix = "cleanup"

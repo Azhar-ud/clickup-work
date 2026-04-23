@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clickup-work"
+version = "0.1.0"
+description = "Pick the next ClickUp ticket and start a Claude Code session on it"
+requires-python = ">=3.11"
+authors = [{ name = "Azhar" }]
+
+[project.scripts]
+clickup-work = "clickup_work.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clickup_work*"]
