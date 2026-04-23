@@ -56,6 +56,15 @@ mechanical parts and hands control to Claude Code for the actual work.
 ### With pipx (recommended)
 
 ```bash
+pipx install clickup-work
+```
+
+Don't have `pipx`? `pip install --user clickup-work` also works on most systems.
+On Arch/Debian-managed Pythons (PEP 668), use `pipx` or a venv.
+
+### Install the latest dev version directly from GitHub
+
+```bash
 pipx install git+https://github.com/Azhar-ud/clickup-work.git
 ```
 
