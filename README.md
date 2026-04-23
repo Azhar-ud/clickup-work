@@ -6,6 +6,27 @@
 
 One command, from terminal to solving the problem.
 
+## Quick start
+
+Four commands from zero to running:
+
+```bash
+# 1. Install
+pipx install clickup-work
+
+# 2. Set your ClickUp API token (generate at ClickUp → Settings → Apps → API Token)
+export CLICKUP_API_TOKEN=pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# 3. Register the repo you want to work in
+clickup-work add-repo ~/projects/my-app
+
+# 4. Go
+clickup-work --repo my-app
+```
+
+Make the token permanent by appending the `export` line to `~/.zshrc` or `~/.bashrc`.
+Full details on each step are below.
+
 ## What it does
 
 ```
