@@ -87,8 +87,12 @@ def _parse_repo_block(name: str, block: dict) -> Repo:
 def load() -> Config:
     if not CONFIG_PATH.exists():
         raise ConfigError(
-            f"config not found at {CONFIG_PATH}\n"
-            f"create it with:\n"
+            f"no config yet at {CONFIG_PATH}\n"
+            f"\n"
+            f"the easy way — register your first repo with one command:\n"
+            f"  clickup-work add-repo /path/to/your/repo\n"
+            f"\n"
+            f"or hand-edit (see config.toml.example in the repo for the format):\n"
             f"  mkdir -p {CONFIG_PATH.parent} && $EDITOR {CONFIG_PATH}"
         )
 
