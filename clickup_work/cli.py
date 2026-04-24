@@ -148,6 +148,119 @@ def _pick_fzf(tasks: list[Task]) -> Task | None:
     return None
 
 
+def _prompt_status_change(client: ClickUp, task: Task) -> None:
+    """Offer to move the ClickUp ticket to a new status.
+
+    Never raises: on any failure, prints a one-line warning that tells the
+    user to move the ticket manually in ClickUp, and returns. The PR is
+    already open by the time this runs, so partial failure here shouldn't
+    tank the flow.
+    """
+    if not task.list_id:
+        print(
+            "[clickup-work] ticket has no list id; move it manually in ClickUp.",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        statuses = client.get_list_statuses(task.list_id)
+    except ClickUpError as e:
+        print(
+            f"[clickup-work] could not fetch statuses ({e}); "
+            f"move the ticket manually in ClickUp.",
+            file=sys.stderr,
+        )
+        return
+
+    if not statuses:
+        print(
+            "[clickup-work] no statuses configured on this list; "
+            "move the ticket manually in ClickUp.",
+            file=sys.stderr,
+        )
+        return
+
+    chosen = _pick_status(statuses, current=task.status)
+    if chosen is None or chosen.lower() == task.status.lower():
+        print("ticket status unchanged.")
+        return
+
+    try:
+        client.update_task_status(task.id, chosen)
+    except ClickUpError as e:
+        print(
+            f"[clickup-work] could not update status ({e}); "
+            f"move the ticket manually in ClickUp.",
+            file=sys.stderr,
+        )
+        return
+
+    print(f"ticket moved: {task.status} → {chosen}")
+
+
+def _pick_status(statuses: list[str], current: str) -> str | None:
+    if not statuses:
+        return None
+    if shutil.which("fzf"):
+        return _pick_status_fzf(statuses, current)
+    return _pick_status_numbered(statuses, current)
+
+
+def _pick_status_fzf(statuses: list[str], current: str) -> str | None:
+    def label(s: str) -> str:
+        return f"{s} (current)" if s.lower() == current.lower() else s
+
+    lines = "\n".join(f"{i}\t{label(s)}" for i, s in enumerate(statuses))
+    result = subprocess.run(
+        [
+            "fzf",
+            "--delimiter", "\t",
+            "--with-nth", "2..",
+            "--prompt", "move ticket to > ",
+            "--height", "40%",
+            "--reverse",
+            "--no-mouse",
+        ],
+        input=lines,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        idx = int(result.stdout.split("\t", 1)[0])
+    except ValueError:
+        return None
+    if 0 <= idx < len(statuses):
+        return statuses[idx]
+    return None
+
+
+def _pick_status_numbered(statuses: list[str], current: str) -> str | None:
+    print("\nMove ticket to which status?\n")
+    for i, s in enumerate(statuses, 1):
+        marker = "  (current)" if s.lower() == current.lower() else ""
+        print(f"  {i:2}. {s}{marker}")
+    print()
+    while True:
+        try:
+            raw = input("pick a number (or q to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw.lower() in {"q", "quit", ""}:
+            return None
+        try:
+            idx = int(raw) - 1
+        except ValueError:
+            print("  not a number; try again")
+            continue
+        if 0 <= idx < len(statuses):
+            return statuses[idx]
+        print(f"  out of range; choose 1–{len(statuses)}")
+
+
 def _pick_numbered(tasks: list[Task]) -> Task | None:
     print("\nOpen tickets assigned to you:\n")
     for i, t in enumerate(tasks, 1):
@@ -209,6 +322,7 @@ def run(
     prefix_override: str | None,
     pick: bool,
     draft: bool,
+    prompt_status: bool,
 ) -> int:
     token = os.environ.get("CLICKUP_API_TOKEN", "").strip()
     if not token:
@@ -306,6 +420,10 @@ def run(
         return _die(str(e))
 
     print(f"{label.capitalize()} opened: {url}")
+
+    if prompt_status:
+        _prompt_status_change(client, task)
+
     return 0
 
 
@@ -346,6 +464,11 @@ def _run_cmd(argv: list[str]) -> int:
         help="open the resulting PR as a draft",
     )
     parser.add_argument(
+        "--no-status",
+        action="store_true",
+        help="skip the 'move ticket to which status?' prompt after the PR opens",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print every API call and git/gh command the tool runs",
@@ -360,6 +483,7 @@ def _run_cmd(argv: list[str]) -> int:
         prefix_override=args.prefix,
         pick=not args.top,
         draft=args.draft,
+        prompt_status=not args.no_status,
     )
 
 

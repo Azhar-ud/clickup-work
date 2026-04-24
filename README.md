@@ -175,6 +175,7 @@ clickup-work add-repo ~/projects/new-repo [--name nickname] [--base-branch main]
 | `--prefix NAME` | Override branch prefix (`feat`, `fix`, `chore`, `docs`, …) |
 | `--top`, `-t` | Auto-pick top-priority ticket (skip picker) |
 | `--draft` | Open the resulting PR as a draft |
+| `--no-status` | Skip the "move ticket to which status?" prompt after the PR opens |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
 
@@ -217,6 +218,12 @@ ahead = git rev-list --count origin/<base>..HEAD
 - `ahead == 0` → print "no new commits on the branch — skipping PR", exit 0
 - `ahead ≥ 1` → `git push -u origin <branch>` then `gh pr create --base <base> --head <branch>`
 - `--draft` passed → PR is opened as a draft
+
+Once the PR is open, the tool prompts you to move the ClickUp ticket to a
+new status — pulled live from the ticket's list, so whatever your workspace
+is configured to use (`in review`, `qa`, `blocked`, …) is what you'll see.
+Pick one to update, or hit `q` / `Esc` to leave it where it is. Pass
+`--no-status` to skip the prompt entirely.
 
 ## Safety
 

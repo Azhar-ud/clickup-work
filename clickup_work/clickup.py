@@ -30,6 +30,7 @@ class Task:
     status: str
     priority: str | None  # "urgent" | "high" | "normal" | "low" | None
     list_name: str
+    list_id: str  # needed to fetch the list's configured statuses
     task_type: str  # e.g. "Task", "Bug", "Feature" — used to pick branch prefix
 
 
@@ -39,25 +40,41 @@ class ClickUp:
             raise ClickUpError("CLICKUP_API_TOKEN is empty")
         self._token = token
 
-    def _request(self, path: str, params: list[tuple[str, str]] | None = None) -> Any:
+    def _request(
+        self,
+        path: str,
+        params: list[tuple[str, str]] | None = None,
+        method: str = "GET",
+        json_body: dict | None = None,
+    ) -> Any:
         url = f"{BASE_URL}{path}"
         if params:
             url = f"{url}?{urllib.parse.urlencode(params, doseq=True)}"
 
-        vlog(f"GET {url}")
+        headers = {
+            "Authorization": self._token,
+            "Accept": "application/json",
+        }
+        data_bytes: bytes | None = None
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+            data_bytes = json.dumps(json_body).encode("utf-8")
+
+        vlog(f"{method} {url}")
+        if json_body is not None:
+            vlog(f"  body: {json.dumps(json_body)}")
         req = urllib.request.Request(
             url,
-            headers={
-                "Authorization": self._token,
-                "Accept": "application/json",
-            },
+            data=data_bytes,
+            method=method,
+            headers=headers,
         )
         started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = resp.read().decode("utf-8")
                 vlog(f"  → {resp.status} in {time.monotonic()-started:.2f}s ({len(body)} bytes)")
-                return json.loads(body)
+                return json.loads(body) if body else {}
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             if e.code == 401:
@@ -124,6 +141,27 @@ class ClickUp:
         raw_tasks.sort(key=sort_key)
         return [_to_task(t) for t in raw_tasks[:limit]]
 
+    def get_list_statuses(self, list_id: str) -> list[str]:
+        """Return status names for the given list, in the workspace's order."""
+        if not list_id:
+            raise ClickUpError("list_id is required to fetch statuses")
+        data = self._request(f"/list/{list_id}")
+        raw = data.get("statuses") or []
+        # Be defensive about ordering — sort by orderindex even though the API
+        # typically returns them sorted already.
+        raw_sorted = sorted(raw, key=lambda s: int(s.get("orderindex", 0)))
+        return [str(s["status"]).strip() for s in raw_sorted if s.get("status")]
+
+    def update_task_status(self, task_id: str, status: str) -> None:
+        """Move a task to the given status. Raises ClickUpError on failure."""
+        if not status:
+            raise ClickUpError("status name is required")
+        self._request(
+            f"/task/{task_id}",
+            method="PUT",
+            json_body={"status": status},
+        )
+
 
 def _to_task(t: dict) -> Task:
     pr = t.get("priority")
@@ -133,6 +171,7 @@ def _to_task(t: dict) -> Task:
         or (t.get("custom_item") or {}).get("name")
         or "Task"
     )
+    list_obj = t.get("list") or {}
     return Task(
         id=str(t["id"]),
         name=str(t.get("name", "")).strip() or f"Task {t['id']}",
@@ -140,6 +179,7 @@ def _to_task(t: dict) -> Task:
         url=str(t.get("url", "")),
         status=str((t.get("status") or {}).get("status", "")),
         priority=priority_name,
-        list_name=str((t.get("list") or {}).get("name", "")),
+        list_name=str(list_obj.get("name", "")),
+        list_id=str(list_obj.get("id", "")),
         task_type=str(task_type),
     )
