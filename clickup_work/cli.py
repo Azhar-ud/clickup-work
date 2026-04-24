@@ -12,8 +12,10 @@ from clickup_work.claude import build_prompt, launch
 from clickup_work.clickup import ClickUp, ClickUpError, Task
 from clickup_work.config import (
     CONFIG_PATH,
+    Config,
     ConfigError,
     Repo,
+    add_folder_to_repo,
     append_repo_block,
     load as load_config,
     resolve_repo,
@@ -106,8 +108,17 @@ def _check_binaries() -> str | None:
 def _format_task_row(i: int, t: Task) -> str:
     pr = (t.priority or "-").ljust(7)
     status = t.status.ljust(13)[:13]
-    list_tag = f"[{t.list_name}]" if t.list_name else ""
-    return f"{i}\t{pr}  {status}  {t.name}  {list_tag}"
+    tag = _task_location_tag(t)
+    return f"{i}\t{pr}  {status}  {t.name}  {tag}"
+
+
+def _task_location_tag(t: Task) -> str:
+    """Render a breadcrumb like '[Folder / List]' for the ticket picker."""
+    if t.folder_name and t.list_name:
+        return f"[{t.folder_name} / {t.list_name}]"
+    if t.list_name:
+        return f"[{t.list_name}]"
+    return ""
 
 
 def pick_task(tasks: list[Task]) -> Task | None:
@@ -280,8 +291,9 @@ def _pick_numbered(tasks: list[Task]) -> Task | None:
     print("\nOpen tickets assigned to you:\n")
     for i, t in enumerate(tasks, 1):
         pr = (t.priority or "-").ljust(7)
-        list_tag = f"  [{t.list_name}]" if t.list_name else ""
-        print(f"  {i:2}. [{pr}] {t.name}{list_tag}")
+        tag = _task_location_tag(t)
+        suffix = f"  {tag}" if tag else ""
+        print(f"  {i:2}. [{pr}] {t.name}{suffix}")
     print()
     while True:
         try:
@@ -330,6 +342,76 @@ def _print_plan(task: Task, repo: Repo, base: str, base_source: str, branch: str
     print(f"Branch:   {branch}  →  PR into {base}")
 
 
+def _route_by_folder(cfg: Config, task: Task) -> Repo | None:
+    """Find the repo whose folder_ids include this task's folder, or None."""
+    if not task.folder_id:
+        return None
+    for repo in cfg.repos.values():
+        if task.folder_id in repo.folder_ids:
+            return repo
+    return None
+
+
+def _prompt_folder_mapping(cfg: Config, task: Task) -> Repo | None:
+    """Ask which repo a newly-seen folder should route to.
+
+    Returns the chosen repo, or None if the user cancels. The caller is
+    responsible for persisting the mapping via add_folder_to_repo — this
+    function only handles the interactive part.
+    """
+    if not cfg.repos:
+        print(
+            "no repos registered. run `clickup-work add-repo <path>` first.",
+            file=sys.stderr,
+        )
+        return None
+
+    folder_label = task.folder_name or "(no folder)"
+    name_snip = task.name if len(task.name) <= 60 else task.name[:57] + "…"
+    print()
+    print(f"Ticket \"{name_snip}\" is in folder \"{folder_label}\",")
+    print("which isn't linked to any repo yet.")
+    print()
+    print("Which repo should this folder route to?")
+    repos = list(cfg.repos.values())
+    for i, r in enumerate(repos, 1):
+        print(f"  {i}. {r.name}  ({r.path})")
+    print("  (or q to cancel and pass --repo manually)")
+    print()
+    while True:
+        try:
+            raw = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw.lower() in {"q", "quit", ""}:
+            return None
+        try:
+            idx = int(raw) - 1
+        except ValueError:
+            print("  not a number; try again")
+            continue
+        if 0 <= idx < len(repos):
+            return repos[idx]
+        print(f"  out of range; choose 1–{len(repos)}")
+
+
+def _resolve_upfront_repo(cfg: Config, repo_override: str | None) -> Repo | None:
+    """Pick the repo to use before ticket selection, or None to route later.
+
+    - --repo always wins.
+    - default_repo or single-repo configs resolve upfront (backward compat).
+    - Multi-repo configs with no default fall through to folder-based routing.
+    """
+    if repo_override:
+        return resolve_repo(cfg, repo_override)
+    if cfg.default_repo:
+        return cfg.repos[cfg.default_repo]
+    if len(cfg.repos) == 1:
+        return next(iter(cfg.repos.values()))
+    return None
+
+
 def run(
     dry_run: bool,
     repo_override: str | None,
@@ -354,11 +436,14 @@ def run(
 
     try:
         cfg = load_config()
-        repo = resolve_repo(cfg, repo_override)
+        upfront_repo = _resolve_upfront_repo(cfg, repo_override)
     except ConfigError as e:
         return _die(str(e))
 
     client = ClickUp(token)
+    # Scope the picker to the upfront repo's folders when set; otherwise show
+    # every assigned ticket so the user can route by folder after picking.
+    folder_filter = list(upfront_repo.folder_ids) if upfront_repo else []
     try:
         with Spinner("fetching open tickets") as sp:
             user_id = client.get_user_id()
@@ -367,13 +452,20 @@ def run(
                 team_id=team_id,
                 user_id=user_id,
                 list_id=cfg.list_id,
+                folder_ids=folder_filter,
             )
             sp.ok(f"found {len(tasks)} open ticket(s)")
     except ClickUpError as e:
         return _die(str(e))
 
     if not tasks:
-        print("no open tickets assigned to you (status: to do / in progress)")
+        if upfront_repo and upfront_repo.folder_ids:
+            print(
+                f"no open tickets in folders linked to '{upfront_repo.name}'. "
+                f"Run without --repo to see all your tickets."
+            )
+        else:
+            print("no open tickets assigned to you (status: to do / in progress)")
         return 0
 
     if pick:
@@ -383,6 +475,35 @@ def run(
             return 0
     else:
         task = tasks[0]
+
+    # Decide which repo this ticket belongs to.
+    if upfront_repo:
+        repo = upfront_repo
+    else:
+        routed = _route_by_folder(cfg, task)
+        if routed is not None:
+            repo = routed
+        else:
+            chosen = _prompt_folder_mapping(cfg, task)
+            if chosen is None:
+                print("cancelled.")
+                return 0
+            repo = chosen
+            # Only persist a mapping if we have a folder id to map against.
+            # Tickets in folderless lists (folder.hidden=true) don't get saved.
+            if task.folder_id:
+                try:
+                    add_folder_to_repo(repo.name, task.folder_id)
+                    print(
+                        f"✓ folder \"{task.folder_name}\" now routes to "
+                        f"'{repo.name}' (saved to {CONFIG_PATH})"
+                    )
+                except ConfigError as e:
+                    print(
+                        f"[clickup-work] warning: couldn't save mapping ({e}). "
+                        f"continuing with '{repo.name}' for this run only.",
+                        file=sys.stderr,
+                    )
 
     try:
         base, base_source = _resolve_base_branch(repo, base_override)

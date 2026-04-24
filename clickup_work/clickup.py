@@ -31,6 +31,8 @@ class Task:
     priority: str | None  # "urgent" | "high" | "normal" | "low" | None
     list_name: str
     list_id: str  # needed to fetch the list's configured statuses
+    folder_name: str  # "" for folderless lists (API reports folder.hidden=true)
+    folder_id: str  # "" for folderless lists; used to route tickets to repos
     task_type: str  # e.g. "Task", "Bug", "Feature" — used to pick branch prefix
 
 
@@ -113,6 +115,7 @@ class ClickUp:
         team_id: str,
         user_id: str,
         list_id: str = "",
+        folder_ids: list[str] | None = None,
         limit: int = 25,
     ) -> list[Task]:
         params: list[tuple[str, str]] = [
@@ -125,6 +128,10 @@ class ClickUp:
             params.append(("statuses[]", s))
         if list_id:
             params.append(("list_ids[]", list_id))
+        # ClickUp's "project_ids" is the v2 API's name for folder ids.
+        for fid in folder_ids or []:
+            if fid:
+                params.append(("project_ids[]", fid))
 
         data = self._request(f"/team/{team_id}/task", params=params)
         raw_tasks = data.get("tasks") or []
@@ -172,6 +179,15 @@ def _to_task(t: dict) -> Task:
         or "Task"
     )
     list_obj = t.get("list") or {}
+    folder_obj = t.get("folder") or {}
+    # Lists placed directly under a Space have a synthetic "hidden" folder —
+    # treat those as having no folder for display/routing.
+    if folder_obj.get("hidden"):
+        folder_name = ""
+        folder_id = ""
+    else:
+        folder_name = str(folder_obj.get("name", ""))
+        folder_id = str(folder_obj.get("id", ""))
     return Task(
         id=str(t["id"]),
         name=str(t.get("name", "")).strip() or f"Task {t['id']}",
@@ -181,5 +197,7 @@ def _to_task(t: dict) -> Task:
         priority=priority_name,
         list_name=str(list_obj.get("name", "")),
         list_id=str(list_obj.get("id", "")),
+        folder_name=folder_name,
+        folder_id=folder_id,
         task_type=str(task_type),
     )
