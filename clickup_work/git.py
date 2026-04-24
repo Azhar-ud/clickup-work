@@ -79,18 +79,24 @@ def remote_branch_exists(repo: Path, branch: str) -> bool:
     return result.returncode == 0
 
 
-def prepare_branch(repo: Path, base_branch: str, branch: str) -> None:
-    """Fetch, fast-forward base, then check out (or create) the feature branch."""
+def prepare_branch(repo: Path, base_branch: str, branch: str) -> str:
+    """Fetch, fast-forward base, then check out (or create) the feature branch.
+
+    Returns "created" if the feature branch was newly created, "reused" if it
+    already existed locally and was checked out again. The caller owns any
+    user-facing message — this function stays quiet so it composes with a
+    spinner wrapper.
+    """
     _run(["git", "fetch", "origin", "--prune"], cwd=repo)
     _run(["git", "checkout", base_branch], cwd=repo)
     # Fast-forward only; fail loudly if base has diverged locally.
     _run(["git", "pull", "--ff-only", "origin", base_branch], cwd=repo)
 
     if _branch_exists(repo, branch):
-        print(f"[clickup-work] branch {branch} already exists, reusing it")
         _run(["git", "checkout", branch], cwd=repo)
-    else:
-        _run(["git", "checkout", "-b", branch], cwd=repo)
+        return "reused"
+    _run(["git", "checkout", "-b", branch], cwd=repo)
+    return "created"
 
 
 def commits_ahead(repo: Path, base_branch: str) -> int:

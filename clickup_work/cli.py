@@ -28,6 +28,7 @@ from clickup_work.git import (
     remote_branch_exists,
 )
 from clickup_work.log import set_verbose
+from clickup_work.spinner import Spinner
 
 
 MAX_SLUG_LEN = 50
@@ -148,6 +149,18 @@ def _pick_fzf(tasks: list[Task]) -> Task | None:
     return None
 
 
+def _confirm(prompt: str, default_yes: bool = True) -> bool:
+    """Yes/no prompt. Enter accepts the default. Ctrl-C / EOF → no."""
+    try:
+        raw = input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if not raw:
+        return default_yes
+    return raw in {"y", "yes"}
+
+
 def _prompt_status_change(client: ClickUp, task: Task) -> None:
     """Offer to move the ClickUp ticket to a new status.
 
@@ -164,7 +177,9 @@ def _prompt_status_change(client: ClickUp, task: Task) -> None:
         return
 
     try:
-        statuses = client.get_list_statuses(task.list_id)
+        with Spinner("loading ticket statuses") as sp:
+            statuses = client.get_list_statuses(task.list_id)
+            sp.silent()
     except ClickUpError as e:
         print(
             f"[clickup-work] could not fetch statuses ({e}); "
@@ -187,7 +202,9 @@ def _prompt_status_change(client: ClickUp, task: Task) -> None:
         return
 
     try:
-        client.update_task_status(task.id, chosen)
+        with Spinner(f"moving ticket to {chosen}") as sp:
+            client.update_task_status(task.id, chosen)
+            sp.ok(f"ticket moved: {task.status} → {chosen}")
     except ClickUpError as e:
         print(
             f"[clickup-work] could not update status ({e}); "
@@ -195,8 +212,6 @@ def _prompt_status_change(client: ClickUp, task: Task) -> None:
             file=sys.stderr,
         )
         return
-
-    print(f"ticket moved: {task.status} → {chosen}")
 
 
 def _pick_status(statuses: list[str], current: str) -> str | None:
@@ -323,6 +338,7 @@ def run(
     pick: bool,
     draft: bool,
     prompt_status: bool,
+    skip_confirm: bool,
 ) -> int:
     token = os.environ.get("CLICKUP_API_TOKEN", "").strip()
     if not token:
@@ -344,13 +360,15 @@ def run(
 
     client = ClickUp(token)
     try:
-        user_id = client.get_user_id()
-        team_id = cfg.team_id or client.get_first_team_id()
-        tasks = client.get_open_tasks(
-            team_id=team_id,
-            user_id=user_id,
-            list_id=cfg.list_id,
-        )
+        with Spinner("fetching open tickets") as sp:
+            user_id = client.get_user_id()
+            team_id = cfg.team_id or client.get_first_team_id()
+            tasks = client.get_open_tasks(
+                team_id=team_id,
+                user_id=user_id,
+                list_id=cfg.list_id,
+            )
+            sp.ok(f"found {len(tasks)} open ticket(s)")
     except ClickUpError as e:
         return _die(str(e))
 
@@ -387,7 +405,10 @@ def run(
         return 0
 
     try:
-        prepare_branch(repo.path, base, branch)
+        with Spinner(f"preparing branch {branch}") as sp:
+            state = prepare_branch(repo.path, base, branch)
+            verb = "reused" if state == "reused" else "created"
+            sp.ok(f"branch {verb}: {branch}")
     except GitError as e:
         return _die(str(e))
 
@@ -406,20 +427,28 @@ def run(
         return 0
 
     label = "draft PR" if draft else "PR"
-    print(f"{ahead} commit(s) to push; opening {label}…")
-    try:
-        url = push_and_open_pr(
-            repo.path,
-            branch=branch,
-            base_branch=base,
-            title=task.name,
-            body=pr_body(task),
-            draft=draft,
+    print(f"{ahead} commit(s) ahead of {base}.")
+
+    if not skip_confirm and not _confirm(f"push branch and open {label}? [Y/n] "):
+        print(
+            f"skipping push. branch '{branch}' is local; "
+            f"push manually when ready (git push -u origin {branch})."
         )
+        return 0
+
+    try:
+        with Spinner(f"opening {label}") as sp:
+            url = push_and_open_pr(
+                repo.path,
+                branch=branch,
+                base_branch=base,
+                title=task.name,
+                body=pr_body(task),
+                draft=draft,
+            )
+            sp.ok(f"{label} opened: {url}")
     except GitError as e:
         return _die(str(e))
-
-    print(f"{label.capitalize()} opened: {url}")
 
     if prompt_status:
         _prompt_status_change(client, task)
@@ -469,6 +498,11 @@ def _run_cmd(argv: list[str]) -> int:
         help="skip the 'move ticket to which status?' prompt after the PR opens",
     )
     parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="skip the 'push branch and open PR?' confirmation prompt",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print every API call and git/gh command the tool runs",
@@ -484,6 +518,7 @@ def _run_cmd(argv: list[str]) -> int:
         pick=not args.top,
         draft=args.draft,
         prompt_status=not args.no_status,
+        skip_confirm=args.yes,
     )
 
 

@@ -176,6 +176,7 @@ clickup-work add-repo ~/projects/new-repo [--name nickname] [--base-branch main]
 | `--top`, `-t` | Auto-pick top-priority ticket (skip picker) |
 | `--draft` | Open the resulting PR as a draft |
 | `--no-status` | Skip the "move ticket to which status?" prompt after the PR opens |
+| `--yes`, `-y` | Skip the "push branch and open PR?" confirmation prompt |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
 
@@ -216,8 +217,11 @@ ahead = git rev-list --count origin/<base>..HEAD
 ```
 
 - `ahead == 0` → print "no new commits on the branch — skipping PR", exit 0
-- `ahead ≥ 1` → `git push -u origin <branch>` then `gh pr create --base <base> --head <branch>`
+- `ahead ≥ 1` → ask `push branch and open PR? [Y/n]`; on yes, `git push -u origin <branch>` then `gh pr create --base <base> --head <branch>`. Pass `--yes` / `-y` to skip the prompt.
 - `--draft` passed → PR is opened as a draft
+
+If you answer `n` at the confirmation, the feature branch stays local —
+you can push it by hand whenever you're ready. No force-push, no reset.
 
 Once the PR is open, the tool prompts you to move the ClickUp ticket to a
 new status — pulled live from the ticket's list, so whatever your workspace
