@@ -105,36 +105,48 @@ def _check_binaries() -> str | None:
     return None
 
 
-def _format_task_row(i: int, t: Task, compact: bool = False) -> str:
+def _format_task_row(i: int, t: Task, tag: str) -> str:
     pr = (t.priority or "-").ljust(7)
     status = t.status.ljust(13)[:13]
-    # `compact` is set when the picker is grouped by folder; the folder already
-    # appears in the section header above the row, so we drop it from the tag.
-    tag = f"[{t.list_name}]" if compact and t.list_name else _task_location_tag(t)
     return f"{i}\t{pr}  {status}  {t.name}  {tag}"
 
 
 def _task_location_tag(t: Task) -> str:
-    """Render a breadcrumb like '[Folder / List]' for the ticket picker."""
+    """Render a breadcrumb like '[Folder / List]' for a non-grouped view."""
     if t.folder_name and t.list_name:
         return f"[{t.folder_name} / {t.list_name}]"
+    if t.space_name and t.list_name:
+        return f"[{t.space_name} / {t.list_name}]"
     if t.list_name:
         return f"[{t.list_name}]"
     return ""
 
 
+def _group_key(t: Task) -> str:
+    """Pick the most meaningful grouping label for a ticket.
+
+    Folder is the primary grouping level when the ticket is in one. When the
+    ticket is in a folderless list (list directly under a Space), the Space
+    is the meaningful level — not some synthetic "(no folder)" bucket.
+    """
+    if t.folder_name:
+        return t.folder_name
+    if t.space_name:
+        return t.space_name
+    return ""
+
+
 def _group_task_indices(tasks: list[Task]) -> list[tuple[str, list[int]]]:
-    """Group task indices by folder_name, preserving the input order.
+    """Group task indices by their most meaningful level, preserving order.
 
     Input tasks arrive priority-sorted, so the first index in each group is
     that group's highest-priority ticket. Group order follows first-seen —
-    equivalent to "sort groups by the priority of their top ticket", which is
-    exactly the "urgent folders surface first" behavior we want.
+    equivalent to "sort groups by the priority of their top ticket".
     """
     indices: dict[str, list[int]] = {}
     seen: list[str] = []
     for i, t in enumerate(tasks):
-        key = t.folder_name
+        key = _group_key(t)
         if key not in indices:
             indices[key] = []
             seen.append(key)
@@ -142,11 +154,21 @@ def _group_task_indices(tasks: list[Task]) -> list[tuple[str, list[int]]]:
     return [(label, indices[label]) for label in seen]
 
 
+def _group_list_summary(group_tasks: list[Task]) -> str | None:
+    """If every ticket in the group shares one list, return that list name."""
+    names = {t.list_name for t in group_tasks if t.list_name}
+    if len(names) == 1:
+        return names.pop()
+    return None
+
+
 _HEADER_WIDTH = 60
 
 
-def _folder_header(label: str, count: int) -> str:
+def _folder_header(label: str, count: int, sublabel: str | None = None) -> str:
     text = label or "(no folder)"
+    if sublabel:
+        text = f"{text} / {sublabel}"
     prefix = f"━━━ {text} ({count}) "
     pad = "━" * max(4, _HEADER_WIDTH - len(prefix))
     return prefix + pad
@@ -169,14 +191,23 @@ def _pick_fzf(tasks: list[Task]) -> Task | None:
     multi_group = len(groups) > 1
 
     rows: list[str] = []
-    for folder, indices in groups:
+    for label, indices in groups:
+        group_tasks = [tasks[i] for i in indices]
+        # If every ticket in this group is in one list, put the list name in
+        # the header and skip the per-row [List] tag (otherwise redundant).
+        sublabel = _group_list_summary(group_tasks) if multi_group else None
         if multi_group:
             # Sentinel index -1 on header rows: fzf shows them (column 2+),
             # but an accidental "selection" falls through to the idx<0 branch
             # below and is treated as cancel.
-            rows.append(f"-1\t{_folder_header(folder, len(indices))}")
+            rows.append(f"-1\t{_folder_header(label, len(indices), sublabel)}")
         for i in indices:
-            rows.append(_format_task_row(i, tasks[i], compact=multi_group))
+            t = tasks[i]
+            if multi_group:
+                tag = "" if sublabel or not t.list_name else f"[{t.list_name}]"
+            else:
+                tag = _task_location_tag(t)
+            rows.append(_format_task_row(i, t, tag))
 
     result = subprocess.run(
         [
@@ -338,16 +369,22 @@ def _pick_numbered(tasks: list[Task]) -> Task | None:
     ordered: list[int] = []
 
     print("\nOpen tickets assigned to you:\n")
-    for folder, indices in groups:
+    for label, indices in groups:
+        group_tasks = [tasks[i] for i in indices]
+        sublabel = _group_list_summary(group_tasks) if multi_group else None
         if multi_group:
-            print(f"  {_folder_header(folder, len(indices))}")
+            print(f"  {_folder_header(label, len(indices), sublabel)}")
         for i in indices:
             t = tasks[i]
             display_num = len(ordered) + 1
             ordered.append(i)
             pr = (t.priority or "-").ljust(7)
             if multi_group:
-                tag = f"  [{t.list_name}]" if t.list_name else ""
+                # Same rule as fzf: drop [List] when the header already names it.
+                if sublabel or not t.list_name:
+                    tag = ""
+                else:
+                    tag = f"  [{t.list_name}]"
             else:
                 lt = _task_location_tag(t)
                 tag = f"  {lt}" if lt else ""

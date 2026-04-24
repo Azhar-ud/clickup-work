@@ -33,6 +33,7 @@ class Task:
     list_id: str  # needed to fetch the list's configured statuses
     folder_name: str  # "" for folderless lists (API reports folder.hidden=true)
     folder_id: str  # "" for folderless lists; used to route tickets to repos
+    space_name: str  # resolved via /team/{id}/space; used when folder is hidden
     task_type: str  # e.g. "Task", "Bug", "Feature" — used to pick branch prefix
 
 
@@ -146,7 +147,28 @@ class ClickUp:
             return (pr_id, due_ms)
 
         raw_tasks.sort(key=sort_key)
-        return [_to_task(t) for t in raw_tasks[:limit]]
+        # ClickUp task payloads only include space.id, not space.name. Pull the
+        # id→name map once so folderless tickets can be labelled by Space (the
+        # real organizational level when there's no folder in between).
+        try:
+            space_names = self.get_spaces(team_id)
+        except ClickUpError:
+            space_names = {}  # Non-fatal: folderless tickets fall back to "(no folder)".
+        return [_to_task(t, space_names) for t in raw_tasks[:limit]]
+
+    def get_spaces(self, team_id: str) -> dict[str, str]:
+        """Return {space_id: space_name} for non-archived spaces in the workspace."""
+        data = self._request(
+            f"/team/{team_id}/space",
+            params=[("archived", "false")],
+        )
+        out: dict[str, str] = {}
+        for s in data.get("spaces") or []:
+            sid = s.get("id")
+            sname = s.get("name")
+            if sid and sname:
+                out[str(sid)] = str(sname)
+        return out
 
     def get_list_statuses(self, list_id: str) -> list[str]:
         """Return status names for the given list, in the workspace's order."""
@@ -170,7 +192,7 @@ class ClickUp:
         )
 
 
-def _to_task(t: dict) -> Task:
+def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
     pr = t.get("priority")
     priority_name = pr.get("priority") if isinstance(pr, dict) else None
     task_type = (
@@ -188,6 +210,9 @@ def _to_task(t: dict) -> Task:
     else:
         folder_name = str(folder_obj.get("name", ""))
         folder_id = str(folder_obj.get("id", ""))
+    space_obj = t.get("space") or {}
+    space_id = str(space_obj.get("id", ""))
+    space_name = (space_names or {}).get(space_id, "")
     return Task(
         id=str(t["id"]),
         name=str(t.get("name", "")).strip() or f"Task {t['id']}",
@@ -199,5 +224,6 @@ def _to_task(t: dict) -> Task:
         list_id=str(list_obj.get("id", "")),
         folder_name=folder_name,
         folder_id=folder_id,
+        space_name=space_name,
         task_type=str(task_type),
     )
