@@ -30,24 +30,36 @@ Full details on each step are below.
 ## What it does
 
 ```
-$ clickup-work --repo my-app
+$ clickup-work
 
-  urgent   in progress    Fix flaky checkout tests                  [Sprint 12]
-  high     to do          Add dark-mode toggle                      [Sprint 12]
-  normal   to do          Refactor notification queue               [Infra]
+⠧ fetching open tickets
+✓ found 4 open ticket(s)
+
+  urgent   in progress    Fix flaky checkout tests        [Product / Sprint 12]
+  high     to do          Add dark-mode toggle            [Product / Sprint 12]
+  normal   to do          Refactor notification queue     [Billing / Infra]
+  normal   to do          iOS launch crash                [Mobile / Bugs]
 pick a ticket >
 
-Ticket:   Add dark-mode toggle  (86c9abc)
-Repo:     /home/you/projects/my-app  (nickname: my-app)
-Base:     main  (resolved from config [repos.my-app].base_branch)
-Branch:   feat/add-dark-mode-toggle  →  PR into main
+Ticket:   iOS launch crash  (86c9abc)
+Repo:     /home/you/projects/mobile-app  (nickname: mobile)
+Base:     main  (resolved from config [repos.mobile].base_branch)
+Branch:   fix/ios-launch-crash  →  PR into main
+
+⠧ preparing branch fix/ios-launch-crash
+✓ branch created: fix/ios-launch-crash
 
 launching Claude Code… (exit the session to come back here)
 
 (you work with Claude, commit, exit)
 
-1 commit(s) to push; opening PR…
-PR opened: https://github.com/you/my-app/pull/42
+2 commit(s) ahead of main.
+push branch and open PR? [Y/n] y
+⠧ opening PR
+✓ PR opened: https://github.com/you/mobile-app/pull/42
+
+(status picker)
+✓ ticket moved: to do → in review
 ```
 
 ## Why
@@ -179,6 +191,54 @@ clickup-work add-repo ~/projects/new-repo [--name nickname] [--base-branch main]
 | `--yes`, `-y` | Skip the "push branch and open PR?" confirmation prompt |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
+
+## How it picks the repo (multi-project workflow)
+
+When you're assigned tickets across several ClickUp folders that map to
+different repos, the tool can route each ticket to the right repo
+automatically. You don't set anything up upfront — it learns as you go.
+
+**First time** you pick a ticket from a folder it hasn't seen:
+
+```
+Ticket "iOS launch crash" is in folder "Mobile",
+which isn't linked to any repo yet.
+
+Which repo should this folder route to?
+  1. marketing  (/home/you/marketing-site)
+  2. billing    (/home/you/billing-service)
+  3. mobile     (/home/you/mobile-app)
+  (or q to cancel and pass --repo manually)
+> 3
+
+✓ folder "Mobile" now routes to 'mobile' (saved to ~/.config/clickup-work/config.toml)
+```
+
+The mapping is saved as `folder_ids = ["<id>"]` inside the repo's config
+block. Future tickets from that folder skip the prompt and go straight
+to the right repo.
+
+**Resolution order** when you run `clickup-work`:
+
+1. `--repo <name>` → always wins; scopes the picker to that repo's folders
+2. `default_repo` in config → backward-compatible single-repo fallback
+3. Exactly one repo registered → that one
+4. Otherwise → fetch all assigned tickets, pick one, route by folder
+
+**Scoping the picker to one project** (focus mode):
+
+```bash
+clickup-work --repo mobile     # only shows tickets from folders linked to 'mobile'
+```
+
+**Hand-editing config** still works if you prefer:
+
+```toml
+[repos.mobile]
+path        = "/home/you/mobile-app"
+base_branch = "main"
+folder_ids  = ["901234567", "901234890"]   # optional; tool fills these in
+```
 
 ## How it picks the base branch
 
