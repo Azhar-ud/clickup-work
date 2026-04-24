@@ -105,10 +105,12 @@ def _check_binaries() -> str | None:
     return None
 
 
-def _format_task_row(i: int, t: Task) -> str:
+def _format_task_row(i: int, t: Task, compact: bool = False) -> str:
     pr = (t.priority or "-").ljust(7)
     status = t.status.ljust(13)[:13]
-    tag = _task_location_tag(t)
+    # `compact` is set when the picker is grouped by folder; the folder already
+    # appears in the section header above the row, so we drop it from the tag.
+    tag = f"[{t.list_name}]" if compact and t.list_name else _task_location_tag(t)
     return f"{i}\t{pr}  {status}  {t.name}  {tag}"
 
 
@@ -119,6 +121,35 @@ def _task_location_tag(t: Task) -> str:
     if t.list_name:
         return f"[{t.list_name}]"
     return ""
+
+
+def _group_task_indices(tasks: list[Task]) -> list[tuple[str, list[int]]]:
+    """Group task indices by folder_name, preserving the input order.
+
+    Input tasks arrive priority-sorted, so the first index in each group is
+    that group's highest-priority ticket. Group order follows first-seen —
+    equivalent to "sort groups by the priority of their top ticket", which is
+    exactly the "urgent folders surface first" behavior we want.
+    """
+    indices: dict[str, list[int]] = {}
+    seen: list[str] = []
+    for i, t in enumerate(tasks):
+        key = t.folder_name
+        if key not in indices:
+            indices[key] = []
+            seen.append(key)
+        indices[key].append(i)
+    return [(label, indices[label]) for label in seen]
+
+
+_HEADER_WIDTH = 60
+
+
+def _folder_header(label: str, count: int) -> str:
+    text = label or "(no folder)"
+    prefix = f"━━━ {text} ({count}) "
+    pad = "━" * max(4, _HEADER_WIDTH - len(prefix))
+    return prefix + pad
 
 
 def pick_task(tasks: list[Task]) -> Task | None:
@@ -134,7 +165,19 @@ def pick_task(tasks: list[Task]) -> Task | None:
 
 
 def _pick_fzf(tasks: list[Task]) -> Task | None:
-    lines = "\n".join(_format_task_row(i, t) for i, t in enumerate(tasks))
+    groups = _group_task_indices(tasks)
+    multi_group = len(groups) > 1
+
+    rows: list[str] = []
+    for folder, indices in groups:
+        if multi_group:
+            # Sentinel index -1 on header rows: fzf shows them (column 2+),
+            # but an accidental "selection" falls through to the idx<0 branch
+            # below and is treated as cancel.
+            rows.append(f"-1\t{_folder_header(folder, len(indices))}")
+        for i in indices:
+            rows.append(_format_task_row(i, tasks[i], compact=multi_group))
+
     result = subprocess.run(
         [
             "fzf",
@@ -145,7 +188,7 @@ def _pick_fzf(tasks: list[Task]) -> Task | None:
             "--reverse",
             "--no-mouse",
         ],
-        input=lines,
+        input="\n".join(rows),
         capture_output=True,
         text=True,
     )
@@ -288,13 +331,31 @@ def _pick_status_numbered(statuses: list[str], current: str) -> str | None:
 
 
 def _pick_numbered(tasks: list[Task]) -> Task | None:
+    groups = _group_task_indices(tasks)
+    multi_group = len(groups) > 1
+
+    # Display-order → original index map, built in the same pass as the print.
+    ordered: list[int] = []
+
     print("\nOpen tickets assigned to you:\n")
-    for i, t in enumerate(tasks, 1):
-        pr = (t.priority or "-").ljust(7)
-        tag = _task_location_tag(t)
-        suffix = f"  {tag}" if tag else ""
-        print(f"  {i:2}. [{pr}] {t.name}{suffix}")
-    print()
+    for folder, indices in groups:
+        if multi_group:
+            print(f"  {_folder_header(folder, len(indices))}")
+        for i in indices:
+            t = tasks[i]
+            display_num = len(ordered) + 1
+            ordered.append(i)
+            pr = (t.priority or "-").ljust(7)
+            if multi_group:
+                tag = f"  [{t.list_name}]" if t.list_name else ""
+            else:
+                lt = _task_location_tag(t)
+                tag = f"  {lt}" if lt else ""
+            print(f"  {display_num:2}. [{pr}] {t.name}{tag}")
+        if multi_group:
+            print()
+    if not multi_group:
+        print()
     while True:
         try:
             raw = input("pick a number (or q to quit): ").strip()
@@ -304,13 +365,13 @@ def _pick_numbered(tasks: list[Task]) -> Task | None:
         if raw.lower() in {"q", "quit", ""}:
             return None
         try:
-            idx = int(raw) - 1
+            n = int(raw) - 1
         except ValueError:
             print("  not a number; try again")
             continue
-        if 0 <= idx < len(tasks):
-            return tasks[idx]
-        print(f"  out of range; choose 1–{len(tasks)}")
+        if 0 <= n < len(ordered):
+            return tasks[ordered[n]]
+        print(f"  out of range; choose 1–{len(ordered)}")
 
 
 def _resolve_base_branch(repo: Repo, cli_override: str | None) -> tuple[str, str]:
