@@ -1,56 +1,45 @@
-# clickup-work — DFA
+# clickup-work — finite state diagram
 
-A deterministic finite automaton that describes one run of `clickup-work`.
-Each state is a checkpoint the program reaches; each edge is the single
-event that moves it forward. Anything that fails on any edge sends the
-machine to `HALT`.
-
-## Diagram
+One run of `clickup-work`, expressed as a finite state machine. Each box is
+a state the program is in; each arrow is the event that moves it to the
+next state. Every state has one escape hatch labelled "error or cancel"
+that leads to `Halt`.
 
 ```mermaid
 stateDiagram-v2
-    [*]      --> START
-    START    --> PICKED   : s   (setup + fetch + pick)
-    PICKED   --> BRANCHED : b   (branch prepared + Claude launched)
-    BRANCHED --> RETURNED : c   (Claude exits with >= 1 commit)
-    RETURNED --> PUSHED   : p   (push + open PR)
-    PUSHED   --> DONE     : u   (ticket status updated or skipped)
-    DONE     --> [*]
+    direction TB
 
-    START    --> HALT : x
-    PICKED   --> HALT : x
-    BRANCHED --> HALT : x
-    RETURNED --> HALT : x
-    PUSHED   --> HALT : x
-    HALT     --> [*]
+    [*] --> Start
+
+    Start: Start\n(no work done yet)
+    TicketReady: Ticket chosen\n(token ok, config loaded,\nticket picked, repo routed)
+    BranchReady: Branch ready\n(base verified, feature\nbranch prepared, Claude\nlaunched in that repo)
+    ClaudeFinished: Claude finished\n(session exited,\nbranch has new commits)
+    PrOpen: Pull request open\n(branch pushed, PR\ncreated on GitHub)
+    Done: Done\n(ClickUp ticket status\nupdated, or user skipped)
+    Halt: Halt\n(error, cancel, dry-run,\nor no commits — exit early)
+
+    Start          --> TicketReady     : fetch tickets, pick one, route to repo
+    TicketReady    --> BranchReady     : verify base, prepare branch, launch Claude
+    BranchReady    --> ClaudeFinished  : Claude exits with at least one commit
+    ClaudeFinished --> PrOpen          : push branch and open PR
+    PrOpen         --> Done            : update ClickUp status (or skip)
+    Done           --> [*]
+
+    Start          --> Halt : error or cancel
+    TicketReady    --> Halt : error or cancel
+    BranchReady    --> Halt : error or cancel
+    ClaudeFinished --> Halt : error, no commits, or declined push
+    PrOpen         --> Halt : error or cancel
+    Halt           --> [*]
 ```
 
-## Formal definition
+## How to read it
 
-**States** `Q = { START, PICKED, BRANCHED, RETURNED, PUSHED, DONE, HALT }`
-**Start** `q0 = START`
-**Accept** `F = { DONE }` (HALT is a reject sink)
-
-**Alphabet** `Σ`
-
-| Symbol | Meaning                                                        |
-|:------:|----------------------------------------------------------------|
-| `s`    | env + binaries + config ok, ticket fetched, ticket+repo picked |
-| `b`    | base branch verified, feature branch prepared, Claude launched |
-| `c`    | Claude exits and the branch has at least one new commit        |
-| `p`    | branch pushed and PR (or draft PR) opened on GitHub            |
-| `u`    | ClickUp ticket status updated, or user skipped the prompt      |
-| `x`    | any error, user cancel, `--dry-run`, or zero commits           |
-
-**Transition function** `δ`
-
-| From       | Input | To         |
-|------------|:-----:|------------|
-| `START`    | `s`   | `PICKED`   |
-| `PICKED`   | `b`   | `BRANCHED` |
-| `BRANCHED` | `c`   | `RETURNED` |
-| `RETURNED` | `p`   | `PUSHED`   |
-| `PUSHED`   | `u`   | `DONE`     |
-| any        | `x`   | `HALT`     |
-
-The only accepting run is `s · b · c · p · u`. Every other run halts.
+- The happy path runs straight down the middle:
+  `Start → Ticket chosen → Branch ready → Claude finished → PR open → Done`.
+- Every state has the same fallback: anything that goes wrong (network
+  error, user pressing Ctrl-C, `--dry-run` stopping the run, no commits to
+  push) sends the program to `Halt` and the process exits.
+- `Done` is the only accepting state. Everything else either keeps moving
+  forward or halts.
