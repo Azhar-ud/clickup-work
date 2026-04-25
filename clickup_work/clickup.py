@@ -196,6 +196,43 @@ class ClickUp:
             json_body={"status": status},
         )
 
+    def set_time_estimate(self, task_id: str, estimate_ms: int) -> None:
+        """Set the task's time estimate (milliseconds)."""
+        if estimate_ms <= 0:
+            raise ClickUpError("estimate must be a positive number of milliseconds")
+        self._request(
+            f"/task/{task_id}",
+            method="PUT",
+            json_body={"time_estimate": int(estimate_ms)},
+        )
+
+    def add_time_entry(
+        self,
+        team_id: str,
+        user_id: str,
+        task_id: str,
+        duration_ms: int,
+        description: str = "",
+    ) -> None:
+        """Log a time entry against a task ending now."""
+        if duration_ms <= 0:
+            raise ClickUpError("duration must be a positive number of milliseconds")
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - int(duration_ms)
+        body = {
+            "description": description,
+            "tid": task_id,
+            "start": start_ms,
+            "duration": int(duration_ms),
+            "billable": False,
+            "assignee": int(user_id),
+        }
+        self._request(
+            f"/team/{team_id}/time_entries",
+            method="POST",
+            json_body=body,
+        )
+
 
 def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
     pr = t.get("priority")

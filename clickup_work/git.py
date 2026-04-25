@@ -108,6 +108,16 @@ def commits_ahead(repo: Path, base_branch: str) -> int:
     return int(out or "0")
 
 
+def commit_subjects(repo: Path, base_branch: str) -> list[str]:
+    """Return commit subjects on the current branch since base, oldest first."""
+    out = _run(
+        ["git", "log", "--reverse", "--format=%s", f"origin/{base_branch}..HEAD"],
+        cwd=repo,
+        capture=True,
+    )
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def push_and_open_pr(
     repo: Path,
     branch: str,

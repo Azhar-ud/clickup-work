@@ -23,6 +23,7 @@ from clickup_work.config import (
 )
 from clickup_work.git import (
     GitError,
+    commit_subjects,
     commits_ahead,
     detect_default_branch,
     prepare_branch,
@@ -85,11 +86,30 @@ def branch_name(task: Task, repo: Repo, cli_prefix: str | None) -> str:
     return f"{prefix}/{slug(task.name)}"
 
 
-def pr_body(task: Task) -> str:
+def pr_body(task: Task, commits: list[str]) -> str:
+    """Build a conventional PR description.
+
+    Headlines what was achieved (commit subjects on the branch), leaves a
+    test-plan checklist for the author, and tucks the original ClickUp ticket
+    description into a collapsed details block for reviewer context.
+    """
+    if commits:
+        summary_block = "\n".join(f"- {line}" for line in commits)
+    else:
+        summary_block = "- _(describe what changed)_"
+
     desc = task.description.strip() or "_(no description on ticket)_"
+
     return (
+        f"## Summary\n"
+        f"{summary_block}\n\n"
+        f"## Test plan\n"
+        f"- [ ] _(add steps to verify)_\n\n"
         f"Closes ClickUp task [{task.id}]({task.url}).\n\n"
-        f"## Ticket\n{desc}\n"
+        f"<details>\n"
+        f"<summary>Original ClickUp ticket</summary>\n\n"
+        f"{desc}\n\n"
+        f"</details>\n"
     )
 
 
@@ -390,6 +410,116 @@ def _pick_status_fzf(statuses: list[str], current: str) -> str | None:
     return None
 
 
+_DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*([hm])", re.IGNORECASE)
+
+
+def _parse_duration(text: str) -> int | None:
+    """Parse '1h 30m', '90m', '2h', '1.5h' into milliseconds.
+
+    Returns None on empty or unparseable input. Accepts a single bare number
+    as minutes (so '45' means 45 minutes). Mixed forms like '1h 30m' sum
+    their parts.
+    """
+    raw = (text or "").strip().lower()
+    if not raw:
+        return None
+    if raw.replace(".", "", 1).isdigit():
+        # Bare number → minutes.
+        try:
+            return int(float(raw) * 60_000)
+        except ValueError:
+            return None
+    matches = _DURATION_PART.findall(raw)
+    if not matches:
+        return None
+    total_ms = 0
+    for value, unit in matches:
+        try:
+            n = float(value)
+        except ValueError:
+            return None
+        if unit == "h":
+            total_ms += int(n * 3_600_000)
+        elif unit == "m":
+            total_ms += int(n * 60_000)
+    return total_ms or None
+
+
+def _format_duration(ms: int) -> str:
+    """Render milliseconds as 'Xh Ym' / 'Xh' / 'Ym' for confirmation output."""
+    total_minutes = max(0, int(round(ms / 60_000)))
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def _prompt_time_tracking(
+    client: ClickUp,
+    task: Task,
+    team_id: str,
+    user_id: str,
+) -> None:
+    """Offer to log time spent and update the time estimate.
+
+    Each prompt is independently skippable with a blank input. Never raises:
+    on any failure, prints a one-line warning and continues so a flaky time
+    API doesn't tank a successful PR run.
+    """
+    spent_raw = _input_or_empty("Track time spent (e.g. 1h 30m, blank to skip): ")
+    if spent_raw:
+        spent_ms = _parse_duration(spent_raw)
+        if spent_ms is None:
+            print(
+                f"[clickup-work] could not parse '{spent_raw}' as a duration; "
+                f"skipping time entry. Log it manually in ClickUp.",
+                file=sys.stderr,
+            )
+        else:
+            try:
+                with Spinner(f"logging {_format_duration(spent_ms)} on ticket") as sp:
+                    client.add_time_entry(team_id, user_id, task.id, spent_ms)
+                    sp.ok(f"time logged: {_format_duration(spent_ms)}")
+            except ClickUpError as e:
+                print(
+                    f"[clickup-work] could not log time ({e}); "
+                    f"add it manually in ClickUp.",
+                    file=sys.stderr,
+                )
+
+    estimate_raw = _input_or_empty("Set time estimate (e.g. 4h, blank to skip): ")
+    if estimate_raw:
+        estimate_ms = _parse_duration(estimate_raw)
+        if estimate_ms is None:
+            print(
+                f"[clickup-work] could not parse '{estimate_raw}' as a duration; "
+                f"skipping estimate. Set it manually in ClickUp.",
+                file=sys.stderr,
+            )
+            return
+        try:
+            with Spinner(f"setting estimate to {_format_duration(estimate_ms)}") as sp:
+                client.set_time_estimate(task.id, estimate_ms)
+                sp.ok(f"estimate set: {_format_duration(estimate_ms)}")
+        except ClickUpError as e:
+            print(
+                f"[clickup-work] could not set estimate ({e}); "
+                f"set it manually in ClickUp.",
+                file=sys.stderr,
+            )
+
+
+def _input_or_empty(prompt: str) -> str:
+    """`input()` that returns '' on Ctrl-C / EOF instead of raising."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
 def _pick_status_numbered(statuses: list[str], current: str) -> str | None:
     print("\nMove ticket to which status?\n")
     for i, s in enumerate(statuses, 1):
@@ -589,6 +719,7 @@ def run(
     pick: bool,
     draft: bool,
     prompt_status: bool,
+    prompt_time: bool,
     skip_confirm: bool,
 ) -> int:
     token = os.environ.get("CLICKUP_API_TOKEN", "").strip()
@@ -727,13 +858,18 @@ def run(
         return 0
 
     try:
+        commits = commit_subjects(repo.path, base)
+    except GitError:
+        commits = []  # Non-fatal: PR opens with an empty summary block.
+
+    try:
         with Spinner(f"opening {label}") as sp:
             url = push_and_open_pr(
                 repo.path,
                 branch=branch,
                 base_branch=base,
                 title=task.name,
-                body=pr_body(task),
+                body=pr_body(task, commits),
                 draft=draft,
             )
             sp.ok(f"{label} opened: {url}")
@@ -742,6 +878,9 @@ def run(
 
     if prompt_status:
         _prompt_status_change(client, task)
+
+    if prompt_time:
+        _prompt_time_tracking(client, task, team_id, user_id)
 
     return 0
 
@@ -788,6 +927,11 @@ def _run_cmd(argv: list[str]) -> int:
         help="skip the 'move ticket to which status?' prompt after the PR opens",
     )
     parser.add_argument(
+        "--no-time",
+        action="store_true",
+        help="skip the 'track time spent / update estimate?' prompts after the PR opens",
+    )
+    parser.add_argument(
         "-y", "--yes",
         action="store_true",
         help="skip the 'push branch and open PR?' confirmation prompt",
@@ -808,6 +952,7 @@ def _run_cmd(argv: list[str]) -> int:
         pick=not args.top,
         draft=args.draft,
         prompt_status=not args.no_status,
+        prompt_time=not args.no_time,
         skip_confirm=args.yes,
     )
 
