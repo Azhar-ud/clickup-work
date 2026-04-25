@@ -12,11 +12,6 @@ from clickup_work.log import vlog
 
 BASE_URL = "https://api.clickup.com/api/v2"
 
-# ClickUp standard "open" statuses. Each workspace can customize, so we match
-# case-insensitively downstream. These are the names sent as query filters.
-OPEN_STATUSES = ("to do", "in progress")
-
-
 class ClickUpError(Exception):
     pass
 
@@ -123,6 +118,12 @@ class ClickUp:
     ) -> list[Task]:
         params: list[tuple[str, str]] = [
             ("assignees[]", user_id),
+            # Trust include_closed=false to scope us to active work — that
+            # filter respects custom workspace statuses (DEV ASSIGNED, QA
+            # ASSIGNED, in review, blocked, …) by excluding only those whose
+            # type is closed/cancelled. A hard-coded statuses[] list would
+            # exclude every workspace that doesn't use the literal names
+            # "to do" and "in progress".
             ("include_closed", "false"),
             ("order_by", "due_date"),
             ("reverse", "false"),
@@ -131,8 +132,6 @@ class ClickUp:
             # "(also in: <list>)" in the picker. No-op when disabled.
             ("include_timl", "true"),
         ]
-        for s in OPEN_STATUSES:
-            params.append(("statuses[]", s))
         if list_id:
             params.append(("list_ids[]", list_id))
         # ClickUp's "project_ids" is the v2 API's name for folder ids.

@@ -634,7 +634,7 @@ def run(
                 f"Run without --repo to see all your tickets."
             )
         else:
-            print("no open tickets assigned to you (status: to do / in progress)")
+            print("no open tickets assigned to you")
         return 0
 
     if pick:
