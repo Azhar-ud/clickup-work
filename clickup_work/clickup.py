@@ -17,6 +17,13 @@ class ClickUpError(Exception):
 
 
 @dataclass(frozen=True)
+class Member:
+    user_id: str
+    username: str
+    email: str
+
+
+@dataclass(frozen=True)
 class Task:
     id: str
     name: str
@@ -204,6 +211,64 @@ class ClickUp:
             f"/task/{task_id}",
             method="PUT",
             json_body={"time_estimate": int(estimate_ms)},
+        )
+
+    def get_team_members(self, team_id: str) -> list[Member]:
+        """Return active members of the workspace.
+
+        ClickUp's /team endpoint embeds members on each team object, so this
+        is one call regardless of workspace size.
+        """
+        data = self._request("/team")
+        for t in data.get("teams") or []:
+            if str(t.get("id")) == str(team_id):
+                out: list[Member] = []
+                for m in t.get("members") or []:
+                    user = m.get("user") or {}
+                    uid = user.get("id")
+                    if uid is None:
+                        continue
+                    name = str(user.get("username", "")).strip()
+                    if not name:
+                        # Fall back to email local-part rather than empty rows.
+                        email = str(user.get("email", "")).strip()
+                        name = email.split("@", 1)[0] if email else f"user-{uid}"
+                    out.append(
+                        Member(
+                            user_id=str(uid),
+                            username=name,
+                            email=str(user.get("email", "")).strip(),
+                        )
+                    )
+                return out
+        raise ClickUpError(
+            f"team id {team_id} not found in /team response — "
+            f"is team_id correct in config?"
+        )
+
+    def update_task_assignees(
+        self,
+        task_id: str,
+        add_ids: list[str] | tuple[str, ...] = (),
+        remove_ids: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        """Add and/or remove assignees on a task in one PUT.
+
+        ClickUp accepts integer user ids in the assignees.add / .rem lists.
+        Empty lists are no-ops; we skip the call entirely in that case.
+        """
+        if not add_ids and not remove_ids:
+            return
+        body = {
+            "assignees": {
+                "add": [int(uid) for uid in add_ids],
+                "rem": [int(uid) for uid in remove_ids],
+            }
+        }
+        self._request(
+            f"/task/{task_id}",
+            method="PUT",
+            json_body=body,
         )
 
     def add_time_entry(

@@ -10,7 +10,7 @@ import sys
 
 from clickup_work import __version__
 from clickup_work.claude import build_prompt, launch
-from clickup_work.clickup import ClickUp, ClickUpError, Task
+from clickup_work.clickup import ClickUp, ClickUpError, Member, Task
 from clickup_work.config import (
     CONFIG_PATH,
     Config,
@@ -523,6 +523,138 @@ def _input_or_empty(prompt: str) -> str:
         return ""
 
 
+def _prompt_reassign(
+    client: ClickUp,
+    task: Task,
+    team_id: str,
+    user_id: str,
+) -> None:
+    """Offer to reassign the ticket via fuzzy member picker.
+
+    Picks one new assignee, then asks whether to remove the current user
+    (clean handoff vs. co-assignment). Empty pick or Esc skips entirely.
+    Never raises: any API failure becomes a one-line warning + manual hint.
+    """
+    try:
+        with Spinner("loading workspace members") as sp:
+            members = client.get_team_members(team_id)
+            sp.silent()
+    except ClickUpError as e:
+        print(
+            f"[clickup-work] could not load members ({e}); "
+            f"reassign manually in ClickUp.",
+            file=sys.stderr,
+        )
+        return
+
+    if not members:
+        print(
+            "[clickup-work] no workspace members visible; "
+            "reassign manually in ClickUp.",
+            file=sys.stderr,
+        )
+        return
+
+    # Sort: alphabetical by name, case-insensitive — fzf does the searching.
+    members_sorted = sorted(members, key=lambda m: m.username.lower())
+
+    chosen = _pick_member(members_sorted, current_user_id=user_id)
+    if chosen is None:
+        return
+    if chosen.user_id == user_id:
+        print("[clickup-work] that's you; no reassignment.")
+        return
+
+    remove_self = _confirm(
+        "also remove yourself from the ticket? [y/N] ",
+        default_yes=False,
+    )
+
+    add_ids = [chosen.user_id]
+    remove_ids = [user_id] if remove_self else []
+
+    try:
+        with Spinner("updating assignees") as sp:
+            client.update_task_assignees(
+                task.id, add_ids=add_ids, remove_ids=remove_ids,
+            )
+            verb = "handed off to" if remove_self else "added"
+            sp.ok(f"{verb} {chosen.username}")
+    except ClickUpError as e:
+        print(
+            f"[clickup-work] could not update assignees ({e}); "
+            f"reassign manually in ClickUp.",
+            file=sys.stderr,
+        )
+
+
+def _pick_member(members: list[Member], current_user_id: str) -> Member | None:
+    if not members:
+        return None
+    if shutil.which("fzf"):
+        return _pick_member_fzf(members, current_user_id)
+    return _pick_member_numbered(members, current_user_id)
+
+
+def _pick_member_fzf(members: list[Member], current_user_id: str) -> Member | None:
+    def label(m: Member) -> str:
+        suffix = "  (you)" if m.user_id == current_user_id else ""
+        email = f"  <{m.email}>" if m.email else ""
+        return f"{m.username}{email}{suffix}"
+
+    lines = "\n".join(f"{i}\t{label(m)}" for i, m in enumerate(members))
+    result = subprocess.run(
+        [
+            "fzf",
+            "--delimiter", "\t",
+            "--with-nth", "2..",
+            "--prompt", "reassign to > ",
+            "--height", "40%",
+            "--reverse",
+            "--no-mouse",
+        ],
+        input=lines,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        idx = int(result.stdout.split("\t", 1)[0])
+    except ValueError:
+        return None
+    if 0 <= idx < len(members):
+        return members[idx]
+    return None
+
+
+def _pick_member_numbered(
+    members: list[Member], current_user_id: str
+) -> Member | None:
+    print("\nReassign ticket to which member?\n")
+    for i, m in enumerate(members, 1):
+        marker = "  (you)" if m.user_id == current_user_id else ""
+        email = f"  <{m.email}>" if m.email else ""
+        print(f"  {i:2}. {m.username}{email}{marker}")
+    print()
+    while True:
+        try:
+            raw = input("pick a number (or q to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw.lower() in {"q", "quit", ""}:
+            return None
+        try:
+            idx = int(raw) - 1
+        except ValueError:
+            print("  not a number; try again")
+            continue
+        if 0 <= idx < len(members):
+            return members[idx]
+        print(f"  out of range; choose 1–{len(members)}")
+
+
 def _pick_status_numbered(statuses: list[str], current: str) -> str | None:
     print("\nMove ticket to which status?\n")
     for i, s in enumerate(statuses, 1):
@@ -738,6 +870,7 @@ def run(
     draft: bool,
     prompt_status: bool,
     prompt_time: bool,
+    prompt_assign: bool,
     skip_confirm: bool,
 ) -> int:
     missing = _check_binaries()
@@ -963,6 +1096,9 @@ def run(
     if prompt_time:
         _prompt_time_tracking(client, task, team_id, user_id)
 
+    if prompt_assign:
+        _prompt_reassign(client, task, team_id, user_id)
+
     return 0
 
 
@@ -1013,6 +1149,11 @@ def _run_cmd(argv: list[str]) -> int:
         help="skip the 'track time spent / update estimate?' prompts after the PR opens",
     )
     parser.add_argument(
+        "--no-assign",
+        action="store_true",
+        help="skip the 'reassign to which member?' prompt after the PR opens",
+    )
+    parser.add_argument(
         "-y", "--yes",
         action="store_true",
         help="skip the 'push branch and open PR?' confirmation prompt",
@@ -1034,6 +1175,7 @@ def _run_cmd(argv: list[str]) -> int:
         draft=args.draft,
         prompt_status=not args.no_status,
         prompt_time=not args.no_time,
+        prompt_assign=not args.no_assign,
         skip_confirm=args.yes,
     )
 

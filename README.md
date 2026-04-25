@@ -204,6 +204,7 @@ clickup-work add-repo ~/projects/new-repo [--name nickname] [--base-branch main]
 | `--draft` | Open the resulting PR as a draft |
 | `--no-status` | Skip the "move ticket to which status?" prompt after the PR opens |
 | `--no-time` | Skip the "track time spent / update estimate?" prompts after the PR opens |
+| `--no-assign` | Skip the "reassign to which member?" prompt after the PR opens |
 | `--yes`, `-y` | Skip the "push branch and open PR?" confirmation prompt |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
@@ -319,6 +320,14 @@ After the status prompt, two short follow-ups offer to log time spent and
 update the ticket's time estimate. Both accept formats like `1h 30m`,
 `90m`, or `1.5h` (a bare number is treated as minutes). Hit Enter on either
 to skip just that one, or pass `--no-time` to skip both.
+
+A final prompt offers to reassign the ticket to another workspace member
+— useful for "I'm done, please review" handoffs. With `fzf` installed,
+you get fuzzy search across name and email (start typing `huzaifa` and
+the list narrows as you type). After picking, a follow-up asks whether
+to remove yourself from the ticket too: `No` keeps you as a co-assignee,
+`Yes` is a clean handoff. Esc or empty pick skips entirely; `--no-assign`
+turns the prompt off.
 
 The PR body itself is generated from the commits on the branch — a
 `## Summary` section bullets each commit subject, a `## Test plan`
