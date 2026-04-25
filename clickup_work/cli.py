@@ -105,10 +105,22 @@ def _check_binaries() -> str | None:
     return None
 
 
-def _format_task_row(i: int, t: Task, tag: str) -> str:
+def _format_task_row(i: int, t: Task, location_tag: str) -> str:
     pr = (t.priority or "-").ljust(7)
     status = t.status.ljust(13)[:13]
-    return f"{i}\t{pr}  {status}  {t.name}  {tag}"
+    suffix = _row_suffix(t, location_tag)
+    body = f"{t.name}  {suffix}" if suffix else t.name
+    return f"{i}\t{pr}  {status}  {body}"
+
+
+def _row_suffix(t: Task, location_tag: str) -> str:
+    """Compose the trailing '[List] #tag1 #tag2' suffix for a row."""
+    parts: list[str] = []
+    if location_tag:
+        parts.append(location_tag)
+    if t.tags:
+        parts.append(" ".join(f"#{tag}" for tag in t.tags))
+    return "  ".join(parts)
 
 
 def _task_location_tag(t: Task) -> str:
@@ -425,13 +437,14 @@ def _pick_numbered(tasks: list[Task]) -> Task | None:
             if multi_group:
                 # Drop [List] when the header already names it.
                 if list_in_header or not t.list_name:
-                    tag = ""
+                    location_tag = ""
                 else:
-                    tag = f"  [{t.list_name}]"
+                    location_tag = f"[{t.list_name}]"
             else:
-                lt = _task_location_tag(t)
-                tag = f"  {lt}" if lt else ""
-            print(f"  {display_num:2}. [{pr}] {t.name}{tag}")
+                location_tag = _task_location_tag(t)
+            suffix = _row_suffix(t, location_tag)
+            tail = f"  {suffix}" if suffix else ""
+            print(f"  {display_num:2}. [{pr}] {t.name}{tail}")
         if multi_group:
             print()
     if not multi_group:
@@ -483,13 +496,25 @@ def _print_plan(task: Task, repo: Repo, base: str, base_source: str, branch: str
     print(f"Branch:   {branch}  →  PR into {base}")
 
 
-def _route_by_folder(cfg: Config, task: Task) -> Repo | None:
-    """Find the repo whose folder_ids include this task's folder, or None."""
-    if not task.folder_id:
-        return None
-    for repo in cfg.repos.values():
-        if task.folder_id in repo.folder_ids:
-            return repo
+def _route_ticket(cfg: Config, task: Task) -> Repo | None:
+    """Find the repo this ticket belongs to.
+
+    Precedence: tag matches (case-insensitive) win over folder matches. A tag
+    is an intentional label ("for project alpha"), folder is structural ("lives
+    in QA"). Intent beats structure — important when a single shared folder
+    holds tickets from many projects, each tagged with the project name.
+
+    Returns None when nothing matches; caller falls through to the prompt.
+    """
+    if task.tags:
+        ticket_tags_lc = {tg.lower() for tg in task.tags}
+        for repo in cfg.repos.values():
+            if any(rt.lower() in ticket_tags_lc for rt in repo.tags):
+                return repo
+    if task.folder_id:
+        for repo in cfg.repos.values():
+            if task.folder_id in repo.folder_ids:
+                return repo
     return None
 
 
@@ -621,7 +646,7 @@ def run(
     if upfront_repo:
         repo = upfront_repo
     else:
-        routed = _route_by_folder(cfg, task)
+        routed = _route_ticket(cfg, task)
         if routed is not None:
             repo = routed
         else:

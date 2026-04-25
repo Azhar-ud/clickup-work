@@ -139,6 +139,7 @@ class Repo:
     base_branch: str  # may be "" to mean auto-detect at runtime
     branch_prefix: str  # may be "" to mean infer from ClickUp task type
     folder_ids: tuple[str, ...]  # ClickUp folder ids that route to this repo
+    tags: tuple[str, ...]  # ClickUp tag names that route to this repo (case-insensitive)
 
 
 @dataclass(frozen=True)
@@ -169,12 +170,17 @@ def _parse_repo_block(name: str, block: dict) -> Repo:
     if not isinstance(raw_folders, list):
         raise ConfigError(f"[repos.{name}].folder_ids must be an array of strings")
     folders = tuple(str(f).strip() for f in raw_folders if str(f).strip())
+    raw_tags = block.get("tags") or []
+    if not isinstance(raw_tags, list):
+        raise ConfigError(f"[repos.{name}].tags must be an array of strings")
+    tags = tuple(str(t).strip() for t in raw_tags if str(t).strip())
     return Repo(
         name=name,
         path=path,
         base_branch=base,
         branch_prefix=prefix,
         folder_ids=folders,
+        tags=tags,
     )
 
 
@@ -214,6 +220,7 @@ def load() -> Config:
             base_branch=str(raw.get("base_branch", "")).strip(),
             branch_prefix="",
             folder_ids=(),
+            tags=(),
         )
 
     default_repo = str(raw.get("default_repo", "")).strip()
@@ -261,6 +268,7 @@ def resolve_repo(
             base_branch="",
             branch_prefix="",
             folder_ids=(),
+            tags=(),
         )
 
     names = ", ".join(sorted(cfg.repos.keys())) or "(none defined)"

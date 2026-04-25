@@ -34,6 +34,7 @@ class Task:
     folder_name: str  # "" for folderless lists (API reports folder.hidden=true)
     folder_id: str  # "" for folderless lists; used to route tickets to repos
     space_name: str  # resolved via /team/{id}/space; used when folder is hidden
+    tags: tuple[str, ...]  # ClickUp tag names — used to route tickets in shared folders
     task_type: str  # e.g. "Task", "Bug", "Feature" — used to pick branch prefix
 
 
@@ -213,6 +214,12 @@ def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
     space_obj = t.get("space") or {}
     space_id = str(space_obj.get("id", ""))
     space_name = (space_names or {}).get(space_id, "")
+    raw_tags = t.get("tags") or []
+    tags = tuple(
+        str(tg["name"]).strip()
+        for tg in raw_tags
+        if isinstance(tg, dict) and tg.get("name")
+    )
     return Task(
         id=str(t["id"]),
         name=str(t.get("name", "")).strip() or f"Task {t['id']}",
@@ -225,5 +232,6 @@ def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
         folder_name=folder_name,
         folder_id=folder_id,
         space_name=space_name,
+        tags=tags,
         task_type=str(task_type),
     )
