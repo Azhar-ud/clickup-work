@@ -863,6 +863,39 @@ def run(
     except GitError as e:
         return _die(str(e))
 
+    # Reused branches preserve whatever base they were originally cut from.
+    # If that base differs from the one the user picked, the branch will have
+    # merge commits ahead of base — we'd rather catch that NOW than after
+    # Claude exits and the user has to redo work on a clean branch.
+    if state == "reused":
+        try:
+            stale_merges = merge_commits_ahead(repo.path, base)
+        except GitError:
+            stale_merges = 0
+        if stale_merges:
+            print()
+            print(
+                f"⚠ this branch already exists locally and has {stale_merges} "
+                f"merge commit(s) ahead of origin/{base}."
+            )
+            print(
+                f"  the branch was likely cut from a different base — its "
+                f"history will land in the PR alongside your real work."
+            )
+            print()
+            print("  clean it up before continuing (in another terminal):")
+            print("    git fetch origin")
+            print(f"    git rebase origin/{base}")
+            print("    # if the branch is already pushed:")
+            print("    git push --force-with-lease")
+            print()
+            if not _confirm(
+                "continue with the branch as-is? [y/N] ",
+                default_yes=False,
+            ):
+                print("aborted. clean up the branch and re-run clickup-work.")
+                return 0
+
     prompt = build_prompt(task, branch=branch, base_branch=base)
     print("\nlaunching Claude Code… (exit the session to come back here)\n")
     exit_code = launch(prompt, cwd=repo.path)
