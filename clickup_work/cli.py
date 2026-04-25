@@ -165,13 +165,48 @@ def _group_list_summary(group_tasks: list[Task]) -> str | None:
 _HEADER_WIDTH = 60
 
 
-def _folder_header(label: str, count: int, sublabel: str | None = None) -> str:
-    text = label or "(no folder)"
-    if sublabel:
-        text = f"{text} / {sublabel}"
+def _folder_header(text: str, count: int) -> str:
+    text = text or "(no folder)"
     prefix = f"━━━ {text} ({count}) "
     pad = "━" * max(4, _HEADER_WIDTH - len(prefix))
     return prefix + pad
+
+
+def _include_space_prefix(tasks: list[Task]) -> bool:
+    """Only show Space in headers when the view actually spans multiple spaces.
+
+    Single-space workspaces get a cleaner header without a repeated prefix;
+    multi-space workspaces get disambiguation where it's meaningful.
+    """
+    spaces = {t.space_name for t in tasks if t.space_name}
+    return len(spaces) > 1
+
+
+def _group_display(
+    group_tasks: list[Task],
+    *,
+    include_space: bool,
+) -> tuple[str, bool]:
+    """Build the header label for a group and report whether the list is in it.
+
+    Returns (label, list_in_header). When list_in_header is True, the caller
+    should drop the per-row [List] tag — it would be redundant.
+
+    The label is a ' / '-joined breadcrumb of Space / Folder / List, with
+    each segment skipped when unavailable. If every segment is unavailable
+    the label falls back to "(no folder)".
+    """
+    t0 = group_tasks[0]
+    parts: list[str] = []
+    if include_space and t0.space_name:
+        parts.append(t0.space_name)
+    if t0.folder_name:
+        parts.append(t0.folder_name)
+    sublabel = _group_list_summary(group_tasks)
+    if sublabel:
+        parts.append(sublabel)
+    label = " / ".join(parts) if parts else "(no folder)"
+    return label, sublabel is not None
 
 
 def pick_task(tasks: list[Task]) -> Task | None:
@@ -189,22 +224,25 @@ def pick_task(tasks: list[Task]) -> Task | None:
 def _pick_fzf(tasks: list[Task]) -> Task | None:
     groups = _group_task_indices(tasks)
     multi_group = len(groups) > 1
+    include_space = _include_space_prefix(tasks)
 
     rows: list[str] = []
-    for label, indices in groups:
+    for _, indices in groups:
         group_tasks = [tasks[i] for i in indices]
-        # If every ticket in this group is in one list, put the list name in
-        # the header and skip the per-row [List] tag (otherwise redundant).
-        sublabel = _group_list_summary(group_tasks) if multi_group else None
         if multi_group:
+            header_text, list_in_header = _group_display(
+                group_tasks, include_space=include_space,
+            )
             # Sentinel index -1 on header rows: fzf shows them (column 2+),
             # but an accidental "selection" falls through to the idx<0 branch
             # below and is treated as cancel.
-            rows.append(f"-1\t{_folder_header(label, len(indices), sublabel)}")
+            rows.append(f"-1\t{_folder_header(header_text, len(indices))}")
+        else:
+            list_in_header = False
         for i in indices:
             t = tasks[i]
             if multi_group:
-                tag = "" if sublabel or not t.list_name else f"[{t.list_name}]"
+                tag = "" if list_in_header or not t.list_name else f"[{t.list_name}]"
             else:
                 tag = _task_location_tag(t)
             rows.append(_format_task_row(i, t, tag))
@@ -368,20 +406,25 @@ def _pick_numbered(tasks: list[Task]) -> Task | None:
     # Display-order → original index map, built in the same pass as the print.
     ordered: list[int] = []
 
+    include_space = _include_space_prefix(tasks)
     print("\nOpen tickets assigned to you:\n")
-    for label, indices in groups:
+    for _, indices in groups:
         group_tasks = [tasks[i] for i in indices]
-        sublabel = _group_list_summary(group_tasks) if multi_group else None
         if multi_group:
-            print(f"  {_folder_header(label, len(indices), sublabel)}")
+            header_text, list_in_header = _group_display(
+                group_tasks, include_space=include_space,
+            )
+            print(f"  {_folder_header(header_text, len(indices))}")
+        else:
+            list_in_header = False
         for i in indices:
             t = tasks[i]
             display_num = len(ordered) + 1
             ordered.append(i)
             pr = (t.priority or "-").ljust(7)
             if multi_group:
-                # Same rule as fzf: drop [List] when the header already names it.
-                if sublabel or not t.list_name:
+                # Drop [List] when the header already names it.
+                if list_in_header or not t.list_name:
                     tag = ""
                 else:
                     tag = f"  [{t.list_name}]"
