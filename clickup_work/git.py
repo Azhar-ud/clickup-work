@@ -109,13 +109,35 @@ def commits_ahead(repo: Path, base_branch: str) -> int:
 
 
 def commit_subjects(repo: Path, base_branch: str) -> list[str]:
-    """Return commit subjects on the current branch since base, oldest first."""
+    """Return non-merge commit subjects on the current branch since base.
+
+    Merge commits are dropped on purpose — they're noise in a PR summary
+    (e.g. `Merge pull request #N from origin/main`) and rarely describe
+    work the author did on this branch.
+    """
     out = _run(
-        ["git", "log", "--reverse", "--format=%s", f"origin/{base_branch}..HEAD"],
+        ["git", "log", "--reverse", "--no-merges", "--format=%s",
+         f"origin/{base_branch}..HEAD"],
         cwd=repo,
         capture=True,
     )
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def merge_commits_ahead(repo: Path, base_branch: str) -> int:
+    """Count merge commits on the branch that aren't on origin/<base_branch>.
+
+    A non-zero count almost always means the branch is stale or was cut
+    from the wrong base — the PR will surface those merges as "ahead" of
+    the target. The caller decides whether to warn or block.
+    """
+    out = _run(
+        ["git", "rev-list", "--count", "--merges",
+         f"origin/{base_branch}..HEAD"],
+        cwd=repo,
+        capture=True,
+    )
+    return int(out or "0")
 
 
 def push_and_open_pr(

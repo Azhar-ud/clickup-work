@@ -28,6 +28,7 @@ from clickup_work.git import (
     commit_subjects,
     commits_ahead,
     detect_default_branch,
+    merge_commits_ahead,
     prepare_branch,
     push_and_open_pr,
     remote_branch_exists,
@@ -878,6 +879,24 @@ def run(
 
     label = "draft PR" if draft else "PR"
     print(f"{ahead} commit(s) ahead of {base}.")
+
+    # Stale-branch sniff: merge commits ahead of base almost always mean the
+    # feature branch was cut from a wrong/old base or had base merged into it.
+    # Warn loudly before pushing — the PR will include them otherwise.
+    try:
+        merges = merge_commits_ahead(repo.path, base)
+    except GitError:
+        merges = 0
+    if merges:
+        print(
+            f"⚠ {merges} of those are merge commit(s). this branch looks stale "
+            f"or cut from the wrong base.\n"
+            f"  the PR will list them all. clean options:\n"
+            f"    - squash-merge the PR on GitHub (one commit, easy), or\n"
+            f"    - rebase locally onto fresh {base} and force-push first:\n"
+            f"        git fetch origin && git rebase origin/{base}\n"
+            f"        git push --force-with-lease"
+        )
 
     if not skip_confirm and not _confirm(f"push branch and open {label}? [Y/n] "):
         print(
