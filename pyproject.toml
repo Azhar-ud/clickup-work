@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clickup-work"
-version = "0.5.2"
+version = "0.6.0"
 description = "Pick the next ClickUp ticket and start a Claude Code session on it. One command from terminal to PR."
 readme = "README.md"
 requires-python = ">=3.11"
