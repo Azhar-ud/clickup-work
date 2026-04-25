@@ -114,12 +114,15 @@ def _format_task_row(i: int, t: Task, location_tag: str) -> str:
 
 
 def _row_suffix(t: Task, location_tag: str) -> str:
-    """Compose the trailing '[List] #tag1 #tag2' suffix for a row."""
+    """Compose the trailing '[List] #tag1 (also in: …)' suffix for a row."""
     parts: list[str] = []
     if location_tag:
         parts.append(location_tag)
     if t.tags:
         parts.append(" ".join(f"#{tag}" for tag in t.tags))
+    if t.locations:
+        names = ", ".join(name for _, name in t.locations)
+        parts.append(f"(also in: {names})")
     return "  ".join(parts)
 
 

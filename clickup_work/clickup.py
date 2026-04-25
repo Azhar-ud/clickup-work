@@ -34,6 +34,7 @@ class Task:
     folder_name: str  # "" for folderless lists (API reports folder.hidden=true)
     folder_id: str  # "" for folderless lists; used to route tickets to repos
     space_name: str  # resolved via /team/{id}/space; used when folder is hidden
+    locations: tuple[tuple[str, str], ...]  # additional (list_id, list_name) when ticket is in multiple lists (TMIL); excludes the home list
     tags: tuple[str, ...]  # ClickUp tag names — used to route tickets in shared folders
     task_type: str  # e.g. "Task", "Bug", "Feature" — used to pick branch prefix
 
@@ -125,6 +126,10 @@ class ClickUp:
             ("include_closed", "false"),
             ("order_by", "due_date"),
             ("reverse", "false"),
+            # Tasks in Multiple Lists: when enabled in the workspace, this
+            # populates the `locations` field on each task so we can show
+            # "(also in: <list>)" in the picker. No-op when disabled.
+            ("include_timl", "true"),
         ]
         for s in OPEN_STATUSES:
             params.append(("statuses[]", s))
@@ -220,6 +225,20 @@ def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
         for tg in raw_tags
         if isinstance(tg, dict) and tg.get("name")
     )
+    # Tasks in Multiple Lists: drop the home list (its id matches list.id) so
+    # only *additional* locations show in the picker. Defensive about shape:
+    # if the field is missing or wrong-typed, locations stays empty.
+    home_list_id = str(list_obj.get("id", ""))
+    raw_locations = t.get("locations") or []
+    extra_locations: list[tuple[str, str]] = []
+    for loc in raw_locations:
+        if not isinstance(loc, dict):
+            continue
+        loc_id = str(loc.get("id", "")).strip()
+        loc_name = str(loc.get("name", "")).strip()
+        if not loc_id or not loc_name or loc_id == home_list_id:
+            continue
+        extra_locations.append((loc_id, loc_name))
     return Task(
         id=str(t["id"]),
         name=str(t.get("name", "")).strip() or f"Task {t['id']}",
@@ -232,6 +251,7 @@ def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
         folder_name=folder_name,
         folder_id=folder_id,
         space_name=space_name,
+        locations=tuple(extra_locations),
         tags=tags,
         task_type=str(task_type),
     )
