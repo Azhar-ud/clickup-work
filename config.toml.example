@@ -1,6 +1,13 @@
 # clickup-work configuration.
 # Copy to ~/.config/clickup-work/config.toml and edit.
 
+# ClickUp API token. The recommended way to set this is:
+#   clickup-work login
+# which prompts for it (input hidden), validates against ClickUp, and writes
+# this line for you with mode 0600 on the file. CLICKUP_API_TOKEN env var
+# still wins when both are present (handy for CI).
+# token = "pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
 # Nickname used when --repo is omitted. Leave blank to always require --repo.
 default_repo = ""
 

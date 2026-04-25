@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import re
 import shutil
@@ -19,6 +20,7 @@ from clickup_work.config import (
     append_repo_block,
     load as load_config,
     resolve_repo,
+    save_token,
     validate_repo_path,
 )
 from clickup_work.git import (
@@ -722,14 +724,6 @@ def run(
     prompt_time: bool,
     skip_confirm: bool,
 ) -> int:
-    token = os.environ.get("CLICKUP_API_TOKEN", "").strip()
-    if not token:
-        return _die(
-            "CLICKUP_API_TOKEN is not set.\n"
-            "Get one at ClickUp → Settings → Apps → API Token, then:\n"
-            "  export CLICKUP_API_TOKEN=pk_xxx..."
-        )
-
     missing = _check_binaries()
     if missing:
         return _die(f"required binary not on PATH: {missing}")
@@ -739,6 +733,16 @@ def run(
         upfront_repo = _resolve_upfront_repo(cfg, repo_override)
     except ConfigError as e:
         return _die(str(e))
+
+    token = os.environ.get("CLICKUP_API_TOKEN", "").strip() or cfg.token
+    if not token:
+        return _die(
+            "no ClickUp API token found.\n"
+            "Save one once with:\n"
+            "  clickup-work login\n"
+            "Or export it per-shell:\n"
+            "  export CLICKUP_API_TOKEN=pk_xxx..."
+        )
 
     client = ClickUp(token)
     # Scope the picker to the upfront repo's folders when set; otherwise show
@@ -1043,8 +1047,65 @@ def _add_repo_cmd(argv: list[str]) -> int:
     return 0
 
 
+def _login_cmd(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="clickup-work login",
+        description="Save your ClickUp API token so new shells don't need to set CLICKUP_API_TOKEN.",
+    )
+    parser.add_argument(
+        "--token",
+        metavar="VALUE",
+        help="provide the token directly (skips the interactive prompt)",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="print every API call the tool runs",
+    )
+    args = parser.parse_args(argv)
+    set_verbose(args.verbose)
+
+    token = (args.token or "").strip()
+    if not token:
+        try:
+            token = getpass.getpass(
+                "Paste your ClickUp API token (input hidden): "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            print("cancelled.")
+            return 0
+
+    if not token:
+        return _die("no token entered; aborting.")
+
+    try:
+        with Spinner("checking token") as sp:
+            client = ClickUp(token)
+            user_id = client.get_user_id()
+            sp.ok(f"token valid (ClickUp user id {user_id})")
+    except ClickUpError as e:
+        return _die(f"token rejected by ClickUp: {e}")
+
+    try:
+        save_token(token)
+    except ConfigError as e:
+        return _die(f"could not save token: {e}")
+
+    print(f"✓ token saved to {CONFIG_PATH} (mode 0600 — readable only by you).")
+    print()
+    print("you can now run `clickup-work` from any new shell — no CLICKUP_API_TOKEN needed.")
+    print(
+        "(if CLICKUP_API_TOKEN is exported in a shell, that env value still wins "
+        "over the saved token — useful for CI.)"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
     if argv and argv[0] == "add-repo":
         return _add_repo_cmd(argv[1:])
+    if argv and argv[0] == "login":
+        return _login_cmd(argv[1:])
     return _run_cmd(argv)

@@ -14,8 +14,8 @@ Four commands from zero to running:
 # 1. Install
 pipx install clickup-work
 
-# 2. Set your ClickUp API token (generate at ClickUp → Settings → Apps → API Token)
-export CLICKUP_API_TOKEN=pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# 2. Save your ClickUp API token once (generate at ClickUp → Settings → Apps → API Token)
+clickup-work login
 
 # 3. Register the repo you want to work in
 clickup-work add-repo ~/projects/my-app
@@ -24,8 +24,9 @@ clickup-work add-repo ~/projects/my-app
 clickup-work --repo my-app
 ```
 
-Make the token permanent by appending the `export` line to `~/.zshrc` or `~/.bashrc`.
-Full details on each step are below.
+The token is stored in `~/.config/clickup-work/config.toml` with mode `0600`,
+so any new shell can use it without exporting an env var. Full details on
+each step are below.
 
 ## What it does
 
@@ -116,11 +117,25 @@ pip install -e .
 
 ### 1. Token
 
+The recommended one-time setup:
+
+```bash
+clickup-work login
+# Paste your ClickUp API token (input hidden): ********
+# ✓ token valid (ClickUp user id 12345)
+# ✓ token saved to ~/.config/clickup-work/config.toml (mode 0600 — readable only by you).
+```
+
+The token lives in `~/.config/clickup-work/config.toml`, so any new shell
+can use it — no `export …` line in `~/.zshrc`, no missing-token errors
+when you open a new terminal.
+
+The env var path still works for CI / scripts and overrides the saved
+token when both are present:
+
 ```bash
 export CLICKUP_API_TOKEN=pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
-
-Add this to `~/.zshrc` / `~/.bashrc` so it persists across shells.
 
 ### 2. Config file
 

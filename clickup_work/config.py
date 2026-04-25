@@ -96,6 +96,61 @@ def add_folder_to_repo(nickname: str, folder_id: str) -> None:
     tmp_path.replace(CONFIG_PATH)
 
 
+_TOKEN_LINE_RE = re.compile(r'^\s*token\s*=\s*.*$', re.MULTILINE)
+_TOKEN_FORMAT_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def save_token(token: str) -> None:
+    """Persist a top-level `token = "..."` line in config.toml.
+
+    Creates the file (and parent dir) if needed. If a top-level `token` line
+    already exists (above any `[section]` header), it is replaced; otherwise
+    a new line is inserted at the top of the file. Sets the file mode to
+    0600 so only the owner can read it. Atomic via .tmp + replace; the
+    rewrite is round-tripped through tomllib before replacing the original.
+    """
+    if not token:
+        raise ConfigError("token is empty; nothing to save")
+    if not _TOKEN_FORMAT_RE.fullmatch(token):
+        raise ConfigError(
+            "token has unexpected characters (allowed: letters, digits, _, -). "
+            "Did stray whitespace get pasted?"
+        )
+
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+
+    # Only edit the head of the file (everything before the first [section])
+    # so we never touch a `token =` that happens to live inside a sub-table.
+    first_section = re.search(r'^\[', existing, re.MULTILINE)
+    head_end = first_section.start() if first_section else len(existing)
+    head = existing[:head_end]
+    rest = existing[head_end:]
+
+    if _TOKEN_LINE_RE.search(head):
+        new_head = _TOKEN_LINE_RE.sub(f'token = "{token}"', head, count=1)
+    elif head.strip():
+        new_head = f'token = "{token}"\n' + head
+    else:
+        new_head = f'token = "{token}"\n' + head
+
+    new_text = new_head + rest
+
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(
+            f"internal error: token rewrite produced invalid TOML "
+            f"({e}). Config not modified."
+        ) from None
+
+    tmp_path = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    tmp_path.write_text(new_text)
+    os.chmod(tmp_path, 0o600)
+    tmp_path.replace(CONFIG_PATH)
+
+
 def append_repo_block(nickname: str, path: str, base_branch: str) -> None:
     """Append a [repos.<nickname>] block to the config file.
 
@@ -147,6 +202,7 @@ class Config:
     default_repo: str
     team_id: str
     list_id: str
+    token: str  # optional; env CLICKUP_API_TOKEN wins when both are set
     repos: dict[str, Repo]  # keyed by nickname
 
 
@@ -234,6 +290,7 @@ def load() -> Config:
         default_repo=default_repo,
         team_id=str(raw.get("team_id", "")).strip(),
         list_id=str(raw.get("list_id", "")).strip(),
+        token=str(raw.get("token", "")).strip(),
         repos=repos,
     )
 
