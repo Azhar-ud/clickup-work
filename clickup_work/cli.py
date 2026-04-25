@@ -602,6 +602,21 @@ def _pick_numbered(tasks: list[Task]) -> Task | None:
         print(f"  out of range; choose 1–{len(ordered)}")
 
 
+def _prompt_base_branch(default: str) -> str:
+    """Ask for the base branch with `default` shown as the suggestion.
+
+    Empty input (or Ctrl-C / EOF) returns the default — so the common case
+    is one Enter keystroke. The caller is responsible for validating the
+    chosen branch against origin (we already do that downstream).
+    """
+    try:
+        raw = input(f"base branch [{default}]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+    return raw or default
+
+
 def _resolve_base_branch(repo: Repo, cli_override: str | None) -> tuple[str, str]:
     """Return (branch, source) where source explains where it came from."""
     if cli_override:
@@ -813,6 +828,16 @@ def run(
         base, base_source = _resolve_base_branch(repo, base_override)
     except GitError as e:
         return _die(str(e))
+
+    # Confirm the base branch interactively when the user didn't already
+    # pin it via --base. Default = the resolved value, so one Enter keeps
+    # the fast path; typing a name overrides for branches like `dev`,
+    # `staging`, or release lines.
+    if base_override is None:
+        chosen = _prompt_base_branch(base)
+        if chosen != base:
+            base = chosen
+            base_source = "interactive prompt"
 
     branch = branch_name(task, repo, prefix_override)
     _print_plan(task, repo, base, base_source, branch)

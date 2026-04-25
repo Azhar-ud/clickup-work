@@ -258,21 +258,31 @@ folder_ids  = ["901234567", "901234890"]   # optional; tool fills these in
 
 ## How it picks the base branch
 
-Resolution order, first non-empty wins:
+Resolution order for the suggested default, first non-empty wins:
 
 1. `--base <branch>` flag
 2. `[repos.<name>].base_branch` in config
 3. `git symbolic-ref refs/remotes/origin/HEAD` (auto-detect)
 4. Error out — the tool refuses to guess
 
-Before any branching, it verifies the resolved base exists on `origin`:
+Unless `--base` was passed, the tool then prompts to confirm or override:
+
+```
+base branch [main]: _
+```
+
+Press Enter to accept the suggestion or type a different branch name —
+useful when a repo has a `dev` / `staging` / release line you sometimes
+branch off instead of `main`. Passing `--base <branch>` skips the prompt.
+
+Before any branching, it verifies the chosen base exists on `origin`:
 
 ```
 git ls-remote --exit-code --heads origin <base>
 ```
 
 If it doesn't, the tool aborts with a clear message — no stray branches, no
-PRs targeting a dead base.
+PRs targeting a dead base, no silent typos.
 
 ## How it picks the branch prefix
 
