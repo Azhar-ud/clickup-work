@@ -191,6 +191,10 @@ clickup-work --repo my-app --verbose
 
 # Register a new repo in config
 clickup-work add-repo ~/projects/new-repo [--name nickname] [--base-branch main]
+
+# Personal workload report (this week + next week)
+clickup-work workload                              # show your load
+clickup-work workload set-capacity 4               # save 4h/day to config
 ```
 
 ### Full flag list
@@ -334,6 +338,85 @@ The PR body itself is generated from the commits on the branch — a
 checklist is left for you to fill in, and the original ClickUp ticket
 description is tucked into a collapsed `<details>` block for reviewer
 context.
+
+## Workload (personal load report)
+
+If your week is part-time, scattered, or being asked about by a PM, the
+`workload` subcommand answers "what's on your plate?" in one shot —
+without opening the ClickUp UI:
+
+```
+$ clickup-work workload
+
+Capacity: 4h/day · 20h/week
+
+This week (May 4 – May 10):
+  ████████████████░░░░  16.5h / 20h  ✓ under
+  • 86c9abc     Fix auth bug                                 4h  due Wed
+  • 86c9def     Refactor cache layer                         8h  due Fri
+  • 86c9ghi     Review PR #88                              2.5h  due Thu
+  • 86c9jkl     Old overdue ticket                           2h  OVERDUE (2026-05-01)
+
+Next week (May 11 – May 17):
+  ████████████████████  26h / 20h  ⚠ OVER by 6h
+  • 86c9mno     Migrate session store                       16h  due 2026-05-12
+  • 86c9pqr     Spike: new search backend                   10h  due 2026-05-15
+
+⚠ 2 assigned ticket(s) have no time estimate — Workload can't see them:
+  • 86c9stu     Investigate flaky test
+  • 86c9vwx     Update docs
+
+Tickets without a due date (not bucketed): 1
+  • 86c9yza     Onboarding doc                                       4h
+```
+
+### Setting your capacity
+
+```bash
+clickup-work workload set-capacity 4    # 4h/day, weekly capacity = 20h
+clickup-work workload set-capacity 4h   # same — `h` suffix accepted
+clickup-work workload set-capacity 4.5  # decimals fine
+```
+
+This writes a `[workload]` block to your config:
+
+```toml
+[workload]
+hours_per_day = 4
+```
+
+The default if absent is `8` (full-time). Weekly capacity is always
+`hours_per_day × 5` weekdays.
+
+### Flags
+
+| Flag | Purpose |
+|---|---|
+| `--hours-per-day HOURS` | Override capacity for this run only — does not write config |
+| `--no-unestimated` | Hide the "tickets without a time estimate" section |
+
+### How tickets land in each section
+
+| Ticket has… | Lands in… |
+|---|---|
+| `due_date` in this week (or overdue) and a positive `time_estimate` | This week's bar + ticket list |
+| `due_date` in next week and a positive `time_estimate` | Next week's bar + ticket list |
+| `due_date` in either week but no estimate | Unestimated section (Workload view is blind to these) |
+| No `due_date` | Undated section |
+| `due_date` more than two weeks out | Out of horizon — not shown |
+
+The bar is `hours_used / weekly_capacity`; it fills up as estimates pile
+on. The header underneath tells you whether you're under, at, or over —
+and by how many hours.
+
+### Why a separate `[workload]` block
+
+ClickUp's Workload view configures capacity per-user inside the ClickUp
+UI, but that capacity setting is **not exposed through the public
+REST API**. There's no endpoint to read it. So `clickup-work` keeps its
+own copy in your local config — `set-capacity` writes it, the report
+reads it. If you want the same number in ClickUp's Workload view too,
+set it there once via the Workload settings panel.
 
 ## Safety
 

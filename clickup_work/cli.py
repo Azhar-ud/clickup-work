@@ -22,6 +22,7 @@ from clickup_work.config import (
     resolve_repo,
     save_token,
     validate_repo_path,
+    write_workload_capacity,
 )
 from clickup_work.git import (
     GitError,
@@ -35,6 +36,7 @@ from clickup_work.git import (
 )
 from clickup_work.log import set_verbose
 from clickup_work.spinner import Spinner
+from clickup_work.workload import build_report, render_report
 
 
 MAX_SLUG_LEN = 50
@@ -1321,10 +1323,142 @@ def _login_cmd(argv: list[str]) -> int:
     return 0
 
 
+def _workload_cmd(argv: list[str]) -> int:
+    """Top-level dispatch for `workload` and `workload set-capacity`."""
+    if argv and argv[0] == "set-capacity":
+        return _workload_set_capacity_cmd(argv[1:])
+    return _workload_report_cmd(argv)
+
+
+def _workload_report_cmd(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="clickup-work workload",
+        description=(
+            "Show this week's and next week's load for tickets assigned to "
+            "you, plus any tickets missing a time estimate."
+        ),
+    )
+    parser.add_argument(
+        "--hours-per-day",
+        type=float,
+        metavar="HOURS",
+        help="override capacity for this run only (does not write config)",
+    )
+    parser.add_argument(
+        "--no-unestimated",
+        action="store_true",
+        help="hide the 'tickets without a time estimate' section",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="print every API call the tool runs",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"clickup-work {__version__}"
+    )
+    args = parser.parse_args(argv)
+    set_verbose(args.verbose)
+
+    try:
+        cfg = load_config()
+    except ConfigError as e:
+        return _die(str(e))
+
+    token = os.environ.get("CLICKUP_API_TOKEN", "").strip() or cfg.token
+    if not token:
+        return _die(
+            "no ClickUp API token found.\n"
+            "Save one once with:\n"
+            "  clickup-work login\n"
+            "Or export it per-shell:\n"
+            "  export CLICKUP_API_TOKEN=pk_xxx..."
+        )
+
+    if args.hours_per_day is not None:
+        if args.hours_per_day <= 0 or args.hours_per_day > 24:
+            return _die(
+                f"--hours-per-day must be between 0 and 24 "
+                f"(got {args.hours_per_day})."
+            )
+        hours_per_day = args.hours_per_day
+    else:
+        hours_per_day = cfg.workload.hours_per_day
+
+    client = ClickUp(token)
+    try:
+        with Spinner("fetching open tickets") as sp:
+            user_id = client.get_user_id()
+            team_id = cfg.team_id or client.get_first_team_id()
+            tasks = client.get_open_tasks(
+                team_id=team_id,
+                user_id=user_id,
+                list_id=cfg.list_id,
+                limit=100,
+            )
+            sp.ok(f"found {len(tasks)} open ticket(s)")
+    except ClickUpError as e:
+        return _die(str(e))
+
+    report = build_report(tasks, hours_per_day=hours_per_day)
+    print()
+    print(render_report(report, show_unestimated=not args.no_unestimated))
+    return 0
+
+
+def _workload_set_capacity_cmd(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="clickup-work workload set-capacity",
+        description=(
+            "Save your daily workload capacity (hours/day) to "
+            "~/.config/clickup-work/config.toml under [workload]."
+        ),
+    )
+    parser.add_argument(
+        "hours",
+        help="hours per day, e.g. 4 or 4h or 4.5",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="print config-write activity",
+    )
+    args = parser.parse_args(argv)
+    set_verbose(args.verbose)
+
+    raw = args.hours.strip().lower().rstrip("h").strip()
+    try:
+        hours = float(raw)
+    except ValueError:
+        return _die(
+            f"could not parse '{args.hours}' as hours. "
+            f"Try a number like `4`, `4h`, or `4.5`."
+        )
+    if hours <= 0 or hours > 24:
+        return _die(
+            f"hours_per_day must be between 0 and 24 (got {hours})."
+        )
+
+    try:
+        write_workload_capacity(hours)
+    except ConfigError as e:
+        return _die(str(e))
+
+    weekly = hours * 5
+    print(
+        f"✓ workload capacity saved to {CONFIG_PATH}: "
+        f"{hours:g}h/day · {weekly:g}h/week (Mon–Fri)."
+    )
+    print("Run `clickup-work workload` to see your load.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
     if argv and argv[0] == "add-repo":
         return _add_repo_cmd(argv[1:])
     if argv and argv[0] == "login":
         return _login_cmd(argv[1:])
+    if argv and argv[0] == "workload":
+        return _workload_cmd(argv[1:])
     return _run_cmd(argv)

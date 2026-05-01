@@ -151,6 +151,87 @@ def save_token(token: str) -> None:
     tmp_path.replace(CONFIG_PATH)
 
 
+_WORKLOAD_HEADER_RE = re.compile(r'^\[[ \t]*workload[ \t]*\][ \t]*$', re.MULTILINE)
+# Use [ \t]* (not \s*) so the match doesn't eat the leading newline that
+# separates the [workload] header from the hours_per_day line. With \s*,
+# `^` matched at the newline and \s* consumed it; the rewrite then glued
+# `[workload]` straight onto the value, producing invalid TOML.
+_HOURS_PER_DAY_LINE_RE = re.compile(
+    r'^[ \t]*hours_per_day[ \t]*=.*$',
+    re.MULTILINE,
+)
+
+
+def write_workload_capacity(hours_per_day: float) -> None:
+    """Persist `[workload].hours_per_day` to config.toml.
+
+    Three cases handled, in order:
+      1. The [workload] block exists with an `hours_per_day` line → replace
+         that line in place.
+      2. The [workload] block exists but no `hours_per_day` → insert one
+         inside the existing block.
+      3. No [workload] block → append a fresh one at the end of the file.
+
+    Round-trips through tomllib before replacing the original; preserves the
+    file's existing mode (0600 if `save_token` set it).
+    """
+    if hours_per_day <= 0 or hours_per_day > 24:
+        raise ConfigError(
+            f"hours_per_day must be between 0 and 24 (got {hours_per_day})."
+        )
+
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+
+    # `:g` drops trailing zeros: 4.0 → "4", 4.5 → "4.5".
+    formatted = f"{hours_per_day:g}"
+    new_line = f"hours_per_day = {formatted}"
+
+    header_match = _WORKLOAD_HEADER_RE.search(existing)
+    if header_match:
+        body_start = header_match.end()
+        next_header = re.search(r'^\[', existing[body_start:], re.MULTILINE)
+        body_end = (
+            body_start + next_header.start() if next_header else len(existing)
+        )
+        block = existing[body_start:body_end]
+        line_match = _HOURS_PER_DAY_LINE_RE.search(block)
+        if line_match:
+            new_block = (
+                block[:line_match.start()]
+                + new_line
+                + block[line_match.end():]
+            )
+        else:
+            head = block.rstrip("\n")
+            tail = block[len(head):]
+            new_block = head + f"\n{new_line}" + tail
+        new_text = existing[:body_start] + new_block + existing[body_end:]
+    else:
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        sep = "\n" if existing else ""
+        new_text = existing + f"{sep}[workload]\n{new_line}\n"
+
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(
+            f"internal error: workload rewrite produced invalid TOML "
+            f"({e}). Config not modified."
+        ) from None
+
+    tmp_path = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    tmp_path.write_text(new_text)
+    # Preserve existing mode (so save_token's 0600 isn't widened by us).
+    if CONFIG_PATH.exists():
+        try:
+            os.chmod(tmp_path, CONFIG_PATH.stat().st_mode & 0o777)
+        except OSError:
+            pass
+    tmp_path.replace(CONFIG_PATH)
+
+
 def append_repo_block(nickname: str, path: str, base_branch: str) -> None:
     """Append a [repos.<nickname>] block to the config file.
 
@@ -197,6 +278,16 @@ class Repo:
     tags: tuple[str, ...]  # ClickUp tag names that route to this repo (case-insensitive)
 
 
+# Default daily capacity used when [workload] is absent from config. 8 matches
+# a full-time day; part-time users override via `workload set-capacity`.
+DEFAULT_HOURS_PER_DAY = 8.0
+
+
+@dataclass(frozen=True)
+class WorkloadConfig:
+    hours_per_day: float
+
+
 @dataclass(frozen=True)
 class Config:
     default_repo: str
@@ -204,6 +295,7 @@ class Config:
     list_id: str
     token: str  # optional; env CLICKUP_API_TOKEN wins when both are set
     repos: dict[str, Repo]  # keyed by nickname
+    workload: WorkloadConfig
 
 
 def validate_repo_path(raw: str) -> Path:
@@ -219,7 +311,11 @@ def _parse_repo_block(name: str, block: dict) -> Repo:
     raw_path = (block.get("path") or "").strip()
     if not raw_path:
         raise ConfigError(f"[repos.{name}] is missing required `path`")
-    path = validate_repo_path(raw_path)
+    # Don't fail config load if a registered repo's directory has gone missing
+    # (renamed, moved, on another machine). Repo-touching commands will hit a
+    # clear error when they actually try to use it; repo-agnostic commands
+    # (login, workload) shouldn't be blocked by an unrelated stale entry.
+    path = Path(os.path.expanduser(raw_path)).resolve()
     base = str(block.get("base_branch", "")).strip()
     prefix = str(block.get("branch_prefix", "")).strip().strip("/")
     raw_folders = block.get("folder_ids") or []
@@ -272,7 +368,7 @@ def load() -> Config:
     if legacy_path and not repos:
         repos["default"] = Repo(
             name="default",
-            path=validate_repo_path(legacy_path),
+            path=Path(os.path.expanduser(legacy_path)).resolve(),
             base_branch=str(raw.get("base_branch", "")).strip(),
             branch_prefix="",
             folder_ids=(),
@@ -286,12 +382,30 @@ def load() -> Config:
             f"Known names: {', '.join(sorted(repos.keys())) or '(none)'}"
         )
 
+    workload_block = raw.get("workload") or {}
+    if not isinstance(workload_block, dict):
+        raise ConfigError("[workload] must be a table")
+    raw_hours = workload_block.get("hours_per_day", DEFAULT_HOURS_PER_DAY)
+    try:
+        hours_per_day = float(raw_hours)
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"[workload].hours_per_day must be a number (got {raw_hours!r}). "
+            f"Run `clickup-work workload set-capacity 4` to fix it."
+        ) from None
+    if hours_per_day <= 0 or hours_per_day > 24:
+        raise ConfigError(
+            f"[workload].hours_per_day must be between 0 and 24 "
+            f"(got {hours_per_day})."
+        )
+
     return Config(
         default_repo=default_repo,
         team_id=str(raw.get("team_id", "")).strip(),
         list_id=str(raw.get("list_id", "")).strip(),
         token=str(raw.get("token", "")).strip(),
         repos=repos,
+        workload=WorkloadConfig(hours_per_day=hours_per_day),
     )
 
 

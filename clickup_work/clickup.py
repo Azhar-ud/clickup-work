@@ -39,6 +39,8 @@ class Task:
     locations: tuple[tuple[str, str], ...]  # additional (list_id, list_name) when ticket is in multiple lists (TMIL); excludes the home list
     tags: tuple[str, ...]  # ClickUp tag names — used to route tickets in shared folders
     task_type: str  # e.g. "Task", "Bug", "Feature" — used to pick branch prefix
+    due_date: int | None = None  # epoch ms (UTC) or None if unset on the ticket
+    time_estimate: int | None = None  # ms or None; ClickUp's Workload view ignores tickets without one
 
 
 class ClickUp:
@@ -340,6 +342,8 @@ def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
         if not loc_id or not loc_name or loc_id == home_list_id:
             continue
         extra_locations.append((loc_id, loc_name))
+    due_date = _coerce_int(t.get("due_date"))
+    time_estimate = _coerce_int(t.get("time_estimate"))
     return Task(
         id=str(t["id"]),
         name=str(t.get("name", "")).strip() or f"Task {t['id']}",
@@ -355,4 +359,16 @@ def _to_task(t: dict, space_names: dict[str, str] | None = None) -> Task:
         locations=tuple(extra_locations),
         tags=tags,
         task_type=str(task_type),
+        due_date=due_date,
+        time_estimate=time_estimate,
     )
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Cast a ClickUp millisecond field to int, tolerating str / None / empty."""
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
