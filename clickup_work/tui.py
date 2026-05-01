@@ -286,6 +286,7 @@ class WorkloadApp(App[None]):
         user_id: str,
         list_id: str,
         hours_per_day: float,
+        theme: str | None = None,
     ) -> None:
         super().__init__()
         self._client = client
@@ -295,6 +296,7 @@ class WorkloadApp(App[None]):
         self._hours_per_day = hours_per_day
         self._rows: list[TicketRow] = []
         self._report: WorkloadReport | None = None
+        self._theme = theme
 
     # ------- compose / lifecycle --------------------------------------------
 
@@ -309,6 +311,9 @@ class WorkloadApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        from clickup_work.themes import apply_theme
+
+        apply_theme(self, self._theme)
         self.title = "clickup-work · workload"
         self.sub_title = (
             f"{_format_hours(self._hours_per_day)}/day · "
@@ -607,6 +612,7 @@ def run_app(
     user_id: str,
     list_id: str,
     hours_per_day: float,
+    theme: str | None = None,
 ) -> None:
     """Entry point used by ``cli._workload_report_cmd``."""
     WorkloadApp(
@@ -615,4 +621,5 @@ def run_app(
         user_id=user_id,
         list_id=list_id,
         hours_per_day=hours_per_day,
+        theme=theme,
     ).run()

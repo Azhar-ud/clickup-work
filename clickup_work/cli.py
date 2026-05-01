@@ -255,6 +255,7 @@ def pick_task(
     *,
     use_tui: bool = True,
     actions_ctx: ActionsContext | None = None,
+    theme: str | None = None,
 ) -> Task | None:
     """Interactive picker. Returns None if the user cancels.
 
@@ -274,7 +275,7 @@ def pick_task(
     if use_tui and sys.stdin.isatty() and sys.stdout.isatty():
         from clickup_work.picker import pick_task_tui
 
-        return pick_task_tui(tasks, actions_ctx=actions_ctx)
+        return pick_task_tui(tasks, actions_ctx=actions_ctx, theme=theme)
     if shutil.which("fzf") and sys.stdin.isatty() and sys.stdout.isatty():
         return _pick_fzf(tasks)
     return _pick_numbered(tasks)
@@ -894,6 +895,7 @@ def run(
     prompt_assign: bool,
     skip_confirm: bool,
     use_tui: bool = True,
+    theme: str | None = None,
 ) -> int:
     missing = _check_binaries()
     if missing:
@@ -945,7 +947,12 @@ def run(
 
     if pick:
         actions_ctx = ActionsContext(client=client, team_id=team_id, user_id=user_id)
-        task = pick_task(tasks, use_tui=use_tui, actions_ctx=actions_ctx)
+        task = pick_task(
+            tasks,
+            use_tui=use_tui,
+            actions_ctx=actions_ctx,
+            theme=theme,
+        )
         if task is None:
             print("cancelled.")
             return 0
@@ -1003,7 +1010,8 @@ def run(
                 base_branch=base,
                 base_source=base_source,
                 branch_name=branch,
-            )
+            ),
+            theme=theme,
         )
         if chosen_base is None:
             print("cancelled.")
@@ -1133,7 +1141,8 @@ def run(
                 prompt_status=prompt_status,
                 prompt_time=prompt_time,
                 prompt_assign=prompt_assign,
-            )
+            ),
+            theme=theme,
         )
         return 0
 
@@ -1238,6 +1247,12 @@ def _run_cmd(argv: list[str]) -> int:
         help="disable the Textual TUI ticket picker (falls back to fzf or numbered)",
     )
     parser.add_argument(
+        "--theme",
+        metavar="NAME",
+        help="visual theme for the TUI (default | ben10). "
+             "Also reads $CLICKUP_WORK_THEME.",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print every API call and git/gh command the tool runs",
@@ -1257,6 +1272,7 @@ def _run_cmd(argv: list[str]) -> int:
         prompt_assign=not args.no_assign,
         skip_confirm=args.yes,
         use_tui=not args.no_tui,
+        theme=args.theme or os.environ.get("CLICKUP_WORK_THEME"),
     )
 
 
@@ -1433,6 +1449,12 @@ def _workload_report_cmd(argv: list[str]) -> int:
         help="force the plain-text report even when stdout is a TTY",
     )
     parser.add_argument(
+        "--theme",
+        metavar="NAME",
+        help="visual theme for the TUI (default | ben10). "
+             "Also reads $CLICKUP_WORK_THEME.",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print every API call the tool runs",
@@ -1442,6 +1464,7 @@ def _workload_report_cmd(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
     set_verbose(args.verbose)
+    theme = args.theme or os.environ.get("CLICKUP_WORK_THEME")
 
     try:
         cfg = load_config()
@@ -1492,6 +1515,7 @@ def _workload_report_cmd(argv: list[str]) -> int:
                 user_id=user_id,
                 list_id=cfg.list_id,
                 hours_per_day=hours_per_day,
+                theme=theme,
             )
         except ClickUpError as e:
             return _die(str(e))

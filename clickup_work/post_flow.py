@@ -174,12 +174,13 @@ class PostFlowApp(App[None]):
         Binding("q", "quit", "quit"),
     ]
 
-    def __init__(self, inputs: PostFlowInputs) -> None:
+    def __init__(self, inputs: PostFlowInputs, theme: str | None = None) -> None:
         super().__init__()
         self._i = inputs
         self._pr_url: str | None = None
         self._pushed = False
         self._log_lines: list[str] = []
+        self._theme = theme
 
     # ------- compose / lifecycle --------------------------------------------
 
@@ -197,6 +198,9 @@ class PostFlowApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        from clickup_work.themes import apply_theme
+
+        apply_theme(self, self._theme)
         self.title = "clickup-work · post-Claude"
         self.sub_title = self._i.task.id
         self.query_one("#push-btn", Button).focus()
@@ -441,6 +445,6 @@ def _format_ms(ms: int) -> str:
     return f"{m}m"
 
 
-def run_post_flow(inputs: PostFlowInputs) -> None:
+def run_post_flow(inputs: PostFlowInputs, theme: str | None = None) -> None:
     """Launch the post-Claude TUI. Side effects only; returns None."""
-    PostFlowApp(inputs).run()
+    PostFlowApp(inputs, theme=theme).run()

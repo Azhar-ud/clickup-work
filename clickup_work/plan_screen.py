@@ -84,9 +84,10 @@ class PlanApp(App[str | None]):
         Binding("ctrl+u", "clear_base", "reset base", show=False),
     ]
 
-    def __init__(self, inputs: PlanInputs) -> None:
+    def __init__(self, inputs: PlanInputs, theme: str | None = None) -> None:
         super().__init__()
         self._inputs = inputs
+        self._theme = theme
 
     # ------- compose / lifecycle --------------------------------------------
 
@@ -109,6 +110,9 @@ class PlanApp(App[str | None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        from clickup_work.themes import apply_theme
+
+        apply_theme(self, self._theme)
         self.title = "clickup-work · ready to cut"
         self.sub_title = self._inputs.task.id
         # Focus the plan card by default; user can tab into the Input to edit.
@@ -185,6 +189,6 @@ class PlanApp(App[str | None]):
         self.action_confirm()
 
 
-def run_plan(inputs: PlanInputs) -> str | None:
+def run_plan(inputs: PlanInputs, theme: str | None = None) -> str | None:
     """Launch the plan screen. Returns the confirmed base or None if cancelled."""
-    return PlanApp(inputs).run()
+    return PlanApp(inputs, theme=theme).run()

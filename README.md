@@ -245,6 +245,7 @@ clickup-work workload set-capacity 4               # save 4h/day to config
 | `--no-assign` | Skip the "reassign to which member?" prompt after the PR opens |
 | `--yes`, `-y` | Skip the "push branch and open PR?" confirmation prompt |
 | `--no-tui` | Drop to the plain-text flow (fzf or numbered picker, bare prompts) |
+| `--theme NAME` | Visual theme for the TUI: `default` (textual-dark) or `ben10` (Omnitrix-green palette + scrolling-binary banner on the picker). Also reads `$CLICKUP_WORK_THEME`. |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
 

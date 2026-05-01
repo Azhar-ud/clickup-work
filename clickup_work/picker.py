@@ -24,6 +24,7 @@ from clickup_work.actions_screen import (
     TicketActionsScreen,
 )
 from clickup_work.clickup import Task
+from clickup_work.themes import OmnitrixBanner, apply_theme
 
 _PRIORITY_COLOR = {
     "urgent": "bold red",
@@ -172,6 +173,7 @@ class TicketPickerApp(App[Task | None]):
         tasks: list[Task],
         *,
         actions_ctx: ActionsContext | None = None,
+        theme: str | None = None,
     ) -> None:
         super().__init__()
         self._all_rows = _build_rows(tasks)
@@ -179,6 +181,7 @@ class TicketPickerApp(App[Task | None]):
         self._picked: Task | None = None
         self._visible_indices: list[int] = []  # row index → master row index
         self._actions_ctx = actions_ctx
+        self._theme = theme
 
     @staticmethod
     def _needs_location_column(tasks: list[Task]) -> bool:
@@ -190,6 +193,8 @@ class TicketPickerApp(App[Task | None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        if self._theme == "ben10":
+            yield OmnitrixBanner()
         with Vertical(id="filter-bar"):
             yield Input(placeholder="type to filter · / to refocus · esc to clear",
                         id="filter-input")
@@ -198,6 +203,7 @@ class TicketPickerApp(App[Task | None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        apply_theme(self, self._theme)
         self.title = "clickup-work · pick a ticket"
         self.sub_title = f"{len(self._all_rows)} open"
         self._apply_filter(filter_text="")
@@ -350,6 +356,7 @@ def pick_task_tui(
     tasks: list[Task],
     *,
     actions_ctx: ActionsContext | None = None,
+    theme: str | None = None,
 ) -> Task | None:
     """Run the picker. Empty input list returns ``None`` immediately.
 
@@ -358,12 +365,15 @@ def pick_task_tui(
     read or post comments before deciding to send the ticket to Claude.
     Without it, ``a`` is a silent no-op (e.g. fzf-fallback paths or tests
     that don't supply a client).
+
+    ``theme`` selects a registered visual theme (``"ben10"``, etc.). Unknown
+    or ``None`` values fall back to the default Textual palette.
     """
     if not tasks:
         return None
     if len(tasks) == 1:
         return tasks[0]
-    app = TicketPickerApp(tasks, actions_ctx=actions_ctx)
+    app = TicketPickerApp(tasks, actions_ctx=actions_ctx, theme=theme)
     return app.run()
 
 
