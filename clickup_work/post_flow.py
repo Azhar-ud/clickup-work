@@ -102,7 +102,7 @@ class MemberPrompt(ModalScreen[Member | None]):
             yield ListView(id="member-list")
 
     def on_mount(self) -> None:
-        self._render(filter_text="")
+        self._apply_filter(filter_text="")
         self.query_one("#member-list", ListView).focus()
 
     def action_focus_filter(self) -> None:
@@ -110,13 +110,13 @@ class MemberPrompt(ModalScreen[Member | None]):
 
     @on(Input.Changed, "#member-filter-input")
     def _on_filter(self, event: Input.Changed) -> None:
-        self._render(filter_text=event.value.strip().lower())
+        self._apply_filter(filter_text=event.value.strip().lower())
 
     @on(Input.Submitted, "#member-filter-input")
     def _on_filter_submit(self, event: Input.Submitted) -> None:
         self.query_one("#member-list", ListView).focus()
 
-    def _render(self, *, filter_text: str) -> None:
+    def _apply_filter(self, *, filter_text: str) -> None:
         listview = self.query_one("#member-list", ListView)
         listview.clear()
         self._visible = []
@@ -268,7 +268,10 @@ class PostFlowApp(App[None]):
 
         self._pr_url = url
         label = "draft PR" if self._i.draft else "PR"
-        self._log(f"[green]✓[/] {label} opened: [link={url}]{url}[/link]")
+        # Plain URL — Textual's content markup parser refuses [link=…] when
+        # the URL contains '://'. Most modern terminals make raw URLs
+        # clickable anyway.
+        self._log(f"[green]✓[/] {label} opened: {url}")
         self._start_post_pr_chain()
 
     def action_skip_push(self) -> None:

@@ -188,14 +188,14 @@ class TicketPickerApp(App[Task | None]):
     def on_mount(self) -> None:
         self.title = "clickup-work · pick a ticket"
         self.sub_title = f"{len(self._all_rows)} open"
-        self._render(filter_text="")
+        self._apply_filter(filter_text="")
         self.query_one("#picker-list", ListView).focus()
 
     # ------- filter ---------------------------------------------------------
 
     @on(Input.Changed, "#filter-input")
     def _filter_changed(self, event: Input.Changed) -> None:
-        self._render(filter_text=event.value.strip().lower())
+        self._apply_filter(filter_text=event.value.strip().lower())
 
     @on(Input.Submitted, "#filter-input")
     def _filter_submitted(self, event: Input.Submitted) -> None:
@@ -212,7 +212,7 @@ class TicketPickerApp(App[Task | None]):
 
     # ------- render ---------------------------------------------------------
 
-    def _render(self, *, filter_text: str) -> None:
+    def _apply_filter(self, *, filter_text: str) -> None:
         listview = self.query_one("#picker-list", ListView)
         listview.clear()
         self._visible_indices = []
