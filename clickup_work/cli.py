@@ -249,14 +249,24 @@ def _group_display(
     return label, sublabel is not None
 
 
-def pick_task(tasks: list[Task]) -> Task | None:
-    """Interactive picker. Returns None if the user cancels."""
+def pick_task(tasks: list[Task], *, use_tui: bool = True) -> Task | None:
+    """Interactive picker. Returns None if the user cancels.
+
+    Order of preference: Textual TUI (default on TTY) → fzf (if installed,
+    when ``--no-tui`` is passed and stdout is still a TTY) → numbered list
+    (for non-TTY use). fzf is no longer the default surface but stays as a
+    deterministic fallback for users who prefer it.
+    """
     if not tasks:
         return None
     if len(tasks) == 1:
         return tasks[0]
 
-    if shutil.which("fzf"):
+    if use_tui and sys.stdin.isatty() and sys.stdout.isatty():
+        from clickup_work.picker import pick_task_tui
+
+        return pick_task_tui(tasks)
+    if shutil.which("fzf") and sys.stdin.isatty() and sys.stdout.isatty():
         return _pick_fzf(tasks)
     return _pick_numbered(tasks)
 
@@ -874,6 +884,7 @@ def run(
     prompt_time: bool,
     prompt_assign: bool,
     skip_confirm: bool,
+    use_tui: bool = True,
 ) -> int:
     missing = _check_binaries()
     if missing:
@@ -924,7 +935,7 @@ def run(
         return 0
 
     if pick:
-        task = pick_task(tasks)
+        task = pick_task(tasks, use_tui=use_tui)
         if task is None:
             print("cancelled.")
             return 0
@@ -1161,6 +1172,11 @@ def _run_cmd(argv: list[str]) -> int:
         help="skip the 'push branch and open PR?' confirmation prompt",
     )
     parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="disable the Textual TUI ticket picker (falls back to fzf or numbered)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print every API call and git/gh command the tool runs",
@@ -1179,6 +1195,7 @@ def _run_cmd(argv: list[str]) -> int:
         prompt_time=not args.no_time,
         prompt_assign=not args.no_assign,
         skip_confirm=args.yes,
+        use_tui=not args.no_tui,
     )
 
 
