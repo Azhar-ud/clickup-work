@@ -223,16 +223,22 @@ class StatusPrompt(ModalScreen[str | None]):
         with Vertical():
             yield Label(f"[bold]Move status[/] · {self._ticket_name[:40]}")
             yield Label(f"[dim]current: {self._current}[/]")
+            # Textual 8.x: Select.NULL is the sentinel for "no selection".
+            # Select.BLANK exists too but is just `False` (back-compat alias)
+            # which the value validator rejects on mount.
+            initial = (
+                self._current if self._current in self._options else Select.NULL
+            )
             yield Select(
                 [(s, s) for s in self._options],
-                value=self._current if self._current in self._options else Select.BLANK,
+                value=initial,
                 id="status-select",
             )
-            yield Label("[dim]Enter to save · Esc to cancel[/]")
+            yield Label("[dim]pick a status to apply · Esc to cancel[/]")
 
     @on(Select.Changed, "#status-select")
     def _changed(self, event: Select.Changed) -> None:
-        if event.value is not Select.BLANK:
+        if event.value is not Select.NULL:
             self.dismiss(str(event.value))
 
 
