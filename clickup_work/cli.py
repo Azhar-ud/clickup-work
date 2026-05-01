@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from clickup_work import __version__
+from clickup_work.actions_screen import ActionsContext
 from clickup_work.claude import build_prompt, launch
 from clickup_work.clickup import ClickUp, ClickUpError, Member, Task
 from clickup_work.config import (
@@ -249,13 +250,21 @@ def _group_display(
     return label, sublabel is not None
 
 
-def pick_task(tasks: list[Task], *, use_tui: bool = True) -> Task | None:
+def pick_task(
+    tasks: list[Task],
+    *,
+    use_tui: bool = True,
+    actions_ctx: ActionsContext | None = None,
+) -> Task | None:
     """Interactive picker. Returns None if the user cancels.
 
     Order of preference: Textual TUI (default on TTY) → fzf (if installed,
     when ``--no-tui`` is passed and stdout is still a TTY) → numbered list
     (for non-TTY use). fzf is no longer the default surface but stays as a
     deterministic fallback for users who prefer it.
+
+    ``actions_ctx`` enables the per-ticket actions modal in the Textual
+    picker (``a`` key). The fzf and numbered fallbacks ignore it.
     """
     if not tasks:
         return None
@@ -265,7 +274,7 @@ def pick_task(tasks: list[Task], *, use_tui: bool = True) -> Task | None:
     if use_tui and sys.stdin.isatty() and sys.stdout.isatty():
         from clickup_work.picker import pick_task_tui
 
-        return pick_task_tui(tasks)
+        return pick_task_tui(tasks, actions_ctx=actions_ctx)
     if shutil.which("fzf") and sys.stdin.isatty() and sys.stdout.isatty():
         return _pick_fzf(tasks)
     return _pick_numbered(tasks)
@@ -935,7 +944,8 @@ def run(
         return 0
 
     if pick:
-        task = pick_task(tasks, use_tui=use_tui)
+        actions_ctx = ActionsContext(client=client, team_id=team_id, user_id=user_id)
+        task = pick_task(tasks, use_tui=use_tui, actions_ctx=actions_ctx)
         if task is None:
             print("cancelled.")
             return 0

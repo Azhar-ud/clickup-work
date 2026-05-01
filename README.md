@@ -255,7 +255,8 @@ surfaces in the main flow, plus the workload report:
 
 | Surface | Triggered by | What it does |
 |---|---|---|
-| Ticket picker | `clickup-work [--repo X]` | Filterable list of your open tickets, grouped by folder. Type to filter (matches name + status + folder + tags), arrows to navigate, Enter to pick. |
+| Ticket picker | `clickup-work [--repo X]` | Filterable list of your open tickets, grouped by folder. Type to filter (matches name + status + folder + tags), arrows to navigate, Enter to pick (sends to Claude), `a` to open the actions modal. |
+| Ticket actions | Press `a` on a ticket in the picker | View the ticket's description and metadata. Mutations: `s` status, `p` priority, `d` due date, `b` start date, `e` set estimate, `t` log time, `r` rename, `D` description (opens `$EDITOR`), `T` toggle tag, `A` assignees (add/remove), `S` subtasks (list/create/status), `c` view/post comments, `H` time-entry history (edit/delete past entries). Plus `o` open in browser, `g` send to Claude, `q` back. Date inputs accept `2026-05-10`, `+3d`, `today`, `tomorrow`, or `clear`. |
 | Plan screen | After a ticket is picked | Shows the ticket card and the resolved branch / base. Edit the base inline if you want to target `staging`, `dev`, etc. Enter to launch Claude. |
 | Post-Claude flow | After Claude exits with commits | Push & open PR (Y/N), then a chain: status picker → time spent → time estimate → reassign. Each step skippable with Esc. |
 | Workload | `clickup-work workload` | This week + next week capacity bars, missing-estimates report, inline `e` to set estimate / `s` to change status. |

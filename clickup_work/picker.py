@@ -18,6 +18,11 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
+from clickup_work.actions_screen import (
+    SEND_TO_CLAUDE,
+    ActionsContext,
+    TicketActionsScreen,
+)
 from clickup_work.clickup import Task
 
 _PRIORITY_COLOR = {
@@ -156,17 +161,24 @@ class TicketPickerApp(App[Task | None]):
         Binding("q", "cancel", "quit"),
         Binding("escape", "escape", "back/quit", show=False),
         Binding("enter", "pick", "pick"),
+        Binding("a", "view_actions", "actions"),
         Binding("/", "focus_filter", "filter"),
         Binding("ctrl+l", "focus_filter", "filter", show=False),
         Binding("ctrl+u", "clear_filter", "clear", show=False),
     ]
 
-    def __init__(self, tasks: list[Task]) -> None:
+    def __init__(
+        self,
+        tasks: list[Task],
+        *,
+        actions_ctx: ActionsContext | None = None,
+    ) -> None:
         super().__init__()
         self._all_rows = _build_rows(tasks)
         self._show_locations = self._needs_location_column(tasks)
         self._picked: Task | None = None
         self._visible_indices: list[int] = []  # row index → master row index
+        self._actions_ctx = actions_ctx
 
     @staticmethod
     def _needs_location_column(tasks: list[Task]) -> bool:
@@ -302,6 +314,24 @@ class TicketPickerApp(App[Task | None]):
         self._picked = task
         self.exit(task)
 
+    def action_view_actions(self) -> None:
+        """Open the per-ticket actions modal on the highlighted row.
+
+        Silently no-op when the picker was launched without an ActionsContext
+        (e.g. from a code path that doesn't have the ClickUp client wired up).
+        """
+        if self._actions_ctx is None:
+            return
+        task = self._selected_task()
+        if task is None:
+            return
+
+        def after(result: str | None) -> None:
+            if result == SEND_TO_CLAUDE:
+                self.exit(task)
+
+        self.push_screen(TicketActionsScreen(task, self._actions_ctx), after)
+
     def action_cancel(self) -> None:
         self._picked = None
         self.exit(None)
@@ -316,13 +346,24 @@ class TicketPickerApp(App[Task | None]):
         self.action_cancel()
 
 
-def pick_task_tui(tasks: list[Task]) -> Task | None:
-    """Run the picker. Empty input list returns ``None`` immediately."""
+def pick_task_tui(
+    tasks: list[Task],
+    *,
+    actions_ctx: ActionsContext | None = None,
+) -> Task | None:
+    """Run the picker. Empty input list returns ``None`` immediately.
+
+    When ``actions_ctx`` is provided, pressing ``a`` on a row opens a modal
+    where the user can change status, set the time estimate, log time, and
+    read or post comments before deciding to send the ticket to Claude.
+    Without it, ``a`` is a silent no-op (e.g. fzf-fallback paths or tests
+    that don't supply a client).
+    """
     if not tasks:
         return None
     if len(tasks) == 1:
         return tasks[0]
-    app = TicketPickerApp(tasks)
+    app = TicketPickerApp(tasks, actions_ctx=actions_ctx)
     return app.run()
 
 
