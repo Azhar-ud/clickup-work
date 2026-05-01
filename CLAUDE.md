@@ -19,10 +19,13 @@ If the user asks for something risky (force-push, delete a branch, publish a bro
 
 `clickup-work` is a small CLI that:
 1. Fetches the user's assigned ClickUp tickets
-2. Lets them pick one (fzf picker) or auto-picks top priority (`--top`)
-3. Cuts a conventional branch in a configured local repo
-4. Launches Claude Code with the ticket preloaded as the initial prompt
-5. On Claude's exit, pushes the branch and opens a PR via `gh` — only if there are commits
+2. Lets them pick one via a Textual TUI (or `--top` to auto-pick top priority)
+3. Confirms the cut on a plan screen (ticket card + base-branch input)
+4. Cuts a conventional branch in a configured local repo
+5. Launches Claude Code with the ticket preloaded as the initial prompt
+6. On Claude's exit, opens a post-Claude TUI: push & PR, status, time, reassign — only when there are commits
+
+Plain-text flow (`--no-tui` or non-TTY stdout) is preserved end-to-end for CI and pipes.
 
 Ships as a Python package on PyPI: `pipx install clickup-work`.
 
@@ -30,23 +33,30 @@ Ships as a Python package on PyPI: `pipx install clickup-work`.
 
 | File | Responsibility | Notes |
 |---|---|---|
-| `clickup_work/cli.py` | argparse dispatch, top-level flow, slug/branch naming, interactive picker | Two subcommands: default (ticket flow) and `add-repo`. Keep under ~350 lines. |
-| `clickup_work/config.py` | TOML load/parse, `[repos.*]` block handling, `append_repo_block` | Backwards-compat for the legacy flat `repo_path`. Never loses user data when rewriting — always read, then append. |
-| `clickup_work/clickup.py` | ClickUp REST client (stdlib `urllib`) | Auth header is the raw token, no `Bearer` prefix. Map the `ITEMV2_003` 500 lesson: don't use invalid `order_by` values. |
+| `clickup_work/cli.py` | argparse dispatch, top-level orchestration, slug/branch naming, plain-text picker fallbacks | Subcommands: default (ticket flow), `add-repo`, `login`, `workload`. Larger than 350 lines now (~1500); keep it focused on dispatch and gluing TUI calls — push logic into the TUI modules. |
+| `clickup_work/config.py` | TOML load/parse, `[repos.*]` and `[workload]` block handling, atomic writers (`save_token`, `append_repo_block`, `write_workload_capacity`) | Round-trip safe: parse → write → parse always preserves user data. Never loses comments/order. Repo path is no longer validated at config-load — deferred to use-time so a stale `[repos.*]` doesn't block repo-agnostic subcommands. |
+| `clickup_work/clickup.py` | ClickUp REST client (stdlib `urllib`) | Auth header is the raw token, no `Bearer` prefix. Map the `ITEMV2_003` 500 lesson: don't use invalid `order_by` values. `Task` includes `due_date` and `time_estimate` (epoch ms / ms or None). |
 | `clickup_work/git.py` | `git` + `gh` shell-outs, branch prep, PR creation | Never force-push, never reset, never amend published commits. |
-| `clickup_work/claude.py` | Builds the initial Claude prompt and launches `claude` as a subprocess | Interactive — it blocks until the user exits Claude. |
+| `clickup_work/claude.py` | Builds the initial Claude prompt and launches `claude` as a subprocess | Interactive — it blocks until the user exits Claude. Sits between the plan-screen TUI and the post-Claude TUI; each TUI exits cleanly before/after Claude takes the terminal. |
+| `clickup_work/picker.py` | `TicketPickerApp` — Textual TUI replacing the fzf/numbered picker | Filterable, grouped by folder, color-coded priority. Default surface; fzf falls back when `--no-tui` is set. |
+| `clickup_work/plan_screen.py` | `PlanApp` — plan card + base-branch override | Shown between picker and Claude launch. Returns the confirmed base or None on cancel. |
+| `clickup_work/post_flow.py` | `PostFlowApp` — post-Claude TUI (push, status, time, reassign), plus `MemberPrompt` modal | Reuses `StatusPrompt` and `EstimatePrompt` from `tui.py`. Modal chain via push_screen callbacks. |
+| `clickup_work/tui.py` | `WorkloadApp` — workload TUI; shared `StatusPrompt` and `EstimatePrompt` modals used by other surfaces | Workload report + inline `e`/`s`/`r` mutations. |
+| `clickup_work/workload.py` | Pure logic: bucket tasks into this week / next week, render plain-text fallback | No I/O. Used by both the TUI and the `--no-tui` path. |
 | `clickup_work/log.py` | `vlog()` + `set_verbose()` helpers | Use sparingly — normal output should already be legible. Verbose goes to stderr. |
 | `clickup_work/__main__.py` | `python -m clickup_work` entry point | Delegates to `cli.main`. |
 | `clickup_work/__init__.py` | `__version__` lives here | Keep in sync with `pyproject.toml`. |
 
 ## Hard rules (do not break)
 
-1. **Stdlib only at runtime.** No new runtime dependencies without explicit user approval. `urllib`, `tomllib`, `subprocess`, `argparse` cover everything today.
+1. **Runtime deps: `textual` only.** Beyond the stdlib (`urllib`, `tomllib`, `subprocess`, `argparse`, `webbrowser`), `textual` is the one approved runtime dependency — added in 0.14.0 to power the TUI surfaces. **Don't add others** without explicit user approval (and update this rule when you do).
 2. **Python ≥ 3.11.** `tomllib` requires it. Don't regress.
 3. **Never log or echo `CLICKUP_API_TOKEN`.** Not in `--verbose`, not in errors, not anywhere.
 4. **Never commit `config.toml`** — it's gitignored, keep it that way.
 5. **Safety rails always on:** verify base branch exists on origin before any git op; skip push/PR if no commits; reuse an existing feature branch instead of resetting it.
 6. **Version bump is two-file.** Both `pyproject.toml` and `clickup_work/__init__.py`. If you forget `__init__.py`, `--version` lies.
+7. **`--no-tui` works on every TUI surface.** Plain-text flow must stay functional end-to-end (CI, pipes, scripts). When you add a new TUI screen, also keep its plain-text counterpart wired.
+8. **Don't name a Widget/Screen method `_render`.** Textual's framework calls `self._render()` zero-arg during its render pipeline — overriding it with required keyword args crashes the widget. Use `_apply_filter`, `_redraw`, anything but `_render`.
 
 ## Commands the user actually runs
 
@@ -125,6 +135,21 @@ Users then run `pipx upgrade clickup-work`.
 2. Extract it in `_to_task()` with a safe default
 3. If used in branch/PR/prompt generation, check callers
 
+### Add a new TUI surface
+
+1. Pick the right module: a brand-new screen → its own file (`*_screen.py` or `*_flow.py`); a small modal reused across screens → add to `tui.py`.
+2. Subclass `App[ResultType]` for full screens, `ModalScreen[ResultType]` for popovers. The result type goes into `app.run()` / `screen.dismiss(...)`.
+3. **Don't name internal helpers `_render`** — see hard rule #8.
+4. Gate the launch on `use_tui and sys.stdin.isatty() and sys.stdout.isatty()` from `cli.py`. Keep the existing plain-text branch as the `--no-tui` fallback.
+5. Test with `app.run_test(size=(W, H))` plus `pilot.pause()`. Use `app.export_screenshot(...)` to capture rendered SVG; grep `<text>` elements to verify content without a real terminal.
+6. Add a row to the README's "Interactive UI" table.
+
+### Add an inline mutation to a TUI surface
+
+1. Use `push_screen(Modal(...), callback)` — the callback receives the dismissed value.
+2. Chain modals by pushing the next one inside the previous one's callback (`PostFlowApp` does this for status → time → reassign).
+3. API mutations stay synchronous in the main thread (acceptable for short ClickUp calls). If they get slow, wrap in Textual's `@work` decorator.
+
 ### When a release fails to publish
 
 Check order:
@@ -133,7 +158,24 @@ Check order:
 3. Did the build step pass? (`twine check` is in the workflow)
 4. PyPI side: pending publisher registered under the exact workflow filename + environment name?
 
+## When tickets don't appear (debugging external-system bugs)
+
+When a user reports the picker is missing tickets, showing wrong data, or returning empty: **do not** start by suspecting ClickUp permissions, scope, or workspace structure. Re-read your own request code first.
+
+The 0.6.2 fix was a one-line removal that took multiple wasted diagnostic rounds to reach — because empty/401 responses from the API got interpreted as external constraints. The actual cause was `OPEN_STATUSES = ("to do", "in progress")` hard-coded in `clickup.py`; the user's workspace renamed those to `DEV ASSIGNED`, so the API correctly returned zero. I'd even told the user "no clickup-work change can fix this" right before the screenshot revealed the truth.
+
+Debugging order:
+
+1. **Grep `clickup.py` for hard-coded literals** first — status names, list/folder/space names, default tuples, anything that assumes a "standard" workspace setup. Workspaces *always* customize statuses; status names are case- and exact-match in API filters; `"to do"` / `"in progress"` are not universal.
+2. **Ask for a UI screenshot** of the relevant ClickUp panel. A status column or sidebar view answers naming questions in seconds; a curl against the API can take ten round-trips and still mislead.
+3. **Only then** probe external endpoints. When probing: a 401 on `/folder/{id}` does not mean the resource is unreachable — the team-tasks endpoint with the right filters often returns content that direct folder/list endpoints reject. Don't conflate scope errors with reachability.
+
+Resist declaring a bug "external/unfixable" until our calling code has been audited. Empty results, 401s, and missing fields are all consistent with both external-cause and local-cause hypotheses; confirmation bias treats them as proof of the external one when they're not.
+
 ## What to ignore
 
 - Pyright "Import could not be resolved" diagnostics on `clickup_work.*` modules when this project isn't pip-installed in the current venv. These are false positives; the runtime `sys.path` shim in `~/.local/bin/clickup-work` handles it. Never "fix" them by rearranging imports.
+- Pyright "Import 'textual' could not be resolved" when the project isn't installed in the venv Pyright is using. `textual` is a real runtime dep declared in `pyproject.toml`; it's resolvable in the project venv. Don't restructure imports to silence it.
+- Pyright "X is possibly unbound" inside `with Spinner(...) as sp:` blocks. The variable is assigned inside the context manager and used outside in the same scope; Pyright doesn't follow `__exit__` semantics here.
+- Pyright "event is not accessed" on `@on(...)` handlers. Textual's `@on` decorator requires the event parameter even when you don't read it.
 - Node.js 20 deprecation warnings in the publish workflow. Benign until ~Sep 2026. Bump action versions as part of a normal maintenance pass, not reactively.

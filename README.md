@@ -31,36 +31,62 @@ each step are below.
 ## What it does
 
 ```
-$ clickup-work
+$ clickup-work --repo mobile
 
-⠧ fetching open tickets
-✓ found 4 open ticket(s)
+  clickup-work · pick a ticket — 4 open
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ type to filter · / to refocus · esc to clear                     │
+  └──────────────────────────────────────────────────────────────────┘
+  ── Mobile · 1 ──
+    urgent   to do          iOS launch crash                Bugs
+  ── Product · 2 ──
+    urgent   in progress    Fix flaky checkout tests        Sprint 12
+    high     to do          Add dark-mode toggle            Sprint 12
+  ── Billing · 1 ──
+    normal   to do          Refactor notification queue     Infra
+  4 / 4 tickets visible · ↑↓ nav · enter pick · / filter · q quit
 
-  urgent   in progress    Fix flaky checkout tests        [Product / Sprint 12]
-  high     to do          Add dark-mode toggle            [Product / Sprint 12]
-  normal   to do          Refactor notification queue     [Billing / Infra]
-  normal   to do          iOS launch crash                [Mobile / Bugs]
-pick a ticket >
+  (Enter on iOS launch crash)
 
-Ticket:   iOS launch crash  (86c9abc)
-Repo:     /home/you/projects/mobile-app  (nickname: mobile)
-Base:     main  (resolved from config [repos.mobile].base_branch)
-Branch:   fix/ios-launch-crash  →  PR into main
+  clickup-work · ready to cut — 86c9abc
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ iOS launch crash                                                 │
+  │ 86c9abc  ·  urgent priority  ·  to do                            │
+  │ list:  Engineering / Mobile / Bugs                               │
+  │ url:   https://app.clickup.com/t/86c9abc                         │
+  │                                                                  │
+  │ repo:    /home/you/projects/mobile-app  (nickname: mobile)       │
+  │ branch:  fix/ios-launch-crash  →  PR into main                   │
+  └──────────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ base branch (from origin/HEAD) — edit to override:               │
+  │ main                                                             │
+  └──────────────────────────────────────────────────────────────────┘
 
-⠧ preparing branch fix/ios-launch-crash
-✓ branch created: fix/ios-launch-crash
+  (Enter — branch is cut, Claude Code launches in the same terminal)
 
-launching Claude Code… (exit the session to come back here)
+  …work with Claude, commit, exit…
 
-(you work with Claude, commit, exit)
+  clickup-work · post-Claude — 86c9abc
+  ┌──────────────────────────────────────────────────────────────────┐
+  │ iOS launch crash · 86c9abc                                       │
+  │                                                                  │
+  │ branch:   fix/ios-launch-crash                                   │
+  │ base:     main                                                   │
+  │ commits:  2 ahead                                                │
+  │                                                                  │
+  │ Press Y to push and open the PR. Press N to leave it local.      │
+  └──────────────────────────────────────────────────────────────────┘
+  [ Push & open PR ]  [ Skip — branch stays local ]
 
-2 commit(s) ahead of main.
-push branch and open PR? [Y/n] y
-⠧ opening PR
-✓ PR opened: https://github.com/you/mobile-app/pull/42
+  (Y — push runs, then status / time / reassign modals chain)
+  → pushing fix/ios-launch-crash and opening PR…
+  ✓ PR opened: https://github.com/you/mobile-app/pull/42
+  ✓ ticket moved to in review
+  ✓ logged 1h 30m of time
+  ✓ also assigned huzaifa
 
-(status picker)
-✓ ticket moved: to do → in review
+  all done.  press q to exit.
 ```
 
 ## Why
@@ -69,21 +95,29 @@ Because switching context between ClickUp, your terminal, your git branches,
 and your editor is the slowest part of shipping a ticket. This automates the
 mechanical parts and hands control to Claude Code for the actual work.
 
-- Picks the right ticket (interactive fzf picker, or `--top` to auto-pick)
+- Picks the right ticket via a Textual-powered TUI (filterable list, color-
+  coded priority, keyboard navigation) — or `--top` to auto-pick
+- Confirms the cut on a plan screen (ticket card + base-branch input)
 - Cuts a conventional branch (`feat/<slug>`, `fix/<slug>`, `docs/<slug>`,
   inferred from ClickUp task type — or override with `--prefix`)
 - Never guesses the base branch (explicit per-repo config, `origin/HEAD`
   fallback, verified against origin *before* any git operation)
-- Opens a PR automatically via `gh` when Claude's session ends with commits
-- Skips the PR cleanly if no commits were made (no noise, no force-push)
+- After Claude exits, opens a TUI for push confirmation, status update,
+  time tracking, and reassignment — all in one session
+- Opens the PR via `gh` only when there are real commits — no noise, no
+  force-push
+- Falls back to plain text via `--no-tui` for pipes, CI, or fzf preference
 
 ## Requirements
 
 - Python 3.11+
 - [`claude`](https://github.com/anthropics/claude-code) — Claude Code CLI
 - [`git`](https://git-scm.com/) and [`gh`](https://cli.github.com/), with `gh auth login` done
-- `fzf` (optional; falls back to a numbered picker)
 - A ClickUp API token ([generate one](https://clickup.com/api) under Settings → Apps → API Token)
+- A 256-color, Unicode-capable terminal for the TUI (any modern terminal qualifies)
+- `fzf` (optional — only used when you pass `--no-tui`; otherwise unused)
+
+`textual` (the Python TUI library) is pulled in automatically by `pipx`.
 
 ## Install
 
@@ -210,8 +244,35 @@ clickup-work workload set-capacity 4               # save 4h/day to config
 | `--no-time` | Skip the "track time spent / update estimate?" prompts after the PR opens |
 | `--no-assign` | Skip the "reassign to which member?" prompt after the PR opens |
 | `--yes`, `-y` | Skip the "push branch and open PR?" confirmation prompt |
+| `--no-tui` | Drop to the plain-text flow (fzf or numbered picker, bare prompts) |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
+
+## Interactive UI
+
+Everything happens in a Textual TUI when stdout is a terminal. Three
+surfaces in the main flow, plus the workload report:
+
+| Surface | Triggered by | What it does |
+|---|---|---|
+| Ticket picker | `clickup-work [--repo X]` | Filterable list of your open tickets, grouped by folder. Type to filter (matches name + status + folder + tags), arrows to navigate, Enter to pick. |
+| Plan screen | After a ticket is picked | Shows the ticket card and the resolved branch / base. Edit the base inline if you want to target `staging`, `dev`, etc. Enter to launch Claude. |
+| Post-Claude flow | After Claude exits with commits | Push & open PR (Y/N), then a chain: status picker → time spent → time estimate → reassign. Each step skippable with Esc. |
+| Workload | `clickup-work workload` | This week + next week capacity bars, missing-estimates report, inline `e` to set estimate / `s` to change status. |
+
+**Universal keybinds** in any TUI surface:
+
+| key | does |
+|---|---|
+| `q` | quit / cancel |
+| `Esc` | clear filter, dismiss modal, or quit |
+| `↑` / `↓` | navigate the current list |
+| `enter` | confirm / pick / submit |
+| `/` | focus the filter input where applicable |
+
+**Falling back to plain text** — pass `--no-tui` (or pipe / redirect
+stdout) for the original terminal flow. The fzf-driven picker is still
+available there if `fzf` is installed.
 
 ## How it picks the repo (multi-project workflow)
 
