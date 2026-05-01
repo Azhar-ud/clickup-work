@@ -151,6 +151,81 @@ def save_token(token: str) -> None:
     tmp_path.replace(CONFIG_PATH)
 
 
+_THEME_LINE_RE = re.compile(r'^\s*theme\s*=\s*.*$', re.MULTILINE)
+_THEME_FORMAT_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def save_theme(name: str) -> None:
+    """Persist a top-level `theme = "..."` line in config.toml.
+
+    Pass an empty string (or ``"default"``) to clear the preference — the
+    line is removed entirely so downstream callers see the same state as a
+    fresh install. Otherwise the line is replaced in place if present, or
+    inserted at the top of the file (above any ``[section]`` header).
+
+    Atomic: rewrite is round-tripped through ``tomllib`` and written via
+    ``.tmp`` + ``replace()``. Existing file mode is preserved (so the 0600
+    set by :func:`save_token` isn't widened).
+    """
+    cleaned = (name or "").strip()
+    clearing = cleaned == "" or cleaned.lower() == "default"
+    if not clearing and not _THEME_FORMAT_RE.fullmatch(cleaned):
+        raise ConfigError(
+            "theme name has unexpected characters "
+            "(allowed: letters, digits, _, -)."
+        )
+
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    existing = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
+
+    # Confine the edit to the head of the file (everything before the first
+    # [section]) so we never touch a `theme =` that happens to live inside a
+    # sub-table — same guard pattern as save_token.
+    first_section = re.search(r'^\[', existing, re.MULTILINE)
+    head_end = first_section.start() if first_section else len(existing)
+    head = existing[:head_end]
+    rest = existing[head_end:]
+
+    has_line = _THEME_LINE_RE.search(head) is not None
+
+    if clearing:
+        if not has_line:
+            return  # already absent, no-op
+        # Drop the matched line entirely (including its trailing newline).
+        new_head = _THEME_LINE_RE.sub("", head, count=1)
+        # Avoid leaving a blank line where the theme used to be.
+        new_head = re.sub(r'\n\n+', '\n\n', new_head).lstrip("\n")
+        if new_head and not new_head.endswith("\n"):
+            new_head += "\n"
+    elif has_line:
+        new_head = _THEME_LINE_RE.sub(f'theme = "{cleaned}"', head, count=1)
+    else:
+        # New entry — append after any existing top-level keys but before the
+        # first section header.
+        if head and not head.endswith("\n"):
+            head += "\n"
+        new_head = head + f'theme = "{cleaned}"\n'
+
+    new_text = new_head + rest
+
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(
+            f"internal error: theme rewrite produced invalid TOML "
+            f"({e}). Config not modified."
+        ) from None
+
+    tmp_path = CONFIG_PATH.with_suffix(CONFIG_PATH.suffix + ".tmp")
+    tmp_path.write_text(new_text)
+    if CONFIG_PATH.exists():
+        try:
+            os.chmod(tmp_path, CONFIG_PATH.stat().st_mode & 0o777)
+        except OSError:
+            pass
+    tmp_path.replace(CONFIG_PATH)
+
+
 _WORKLOAD_HEADER_RE = re.compile(r'^\[[ \t]*workload[ \t]*\][ \t]*$', re.MULTILINE)
 # Use [ \t]* (not \s*) so the match doesn't eat the leading newline that
 # separates the [workload] header from the hours_per_day line. With \s*,
@@ -296,6 +371,7 @@ class Config:
     token: str  # optional; env CLICKUP_API_TOKEN wins when both are set
     repos: dict[str, Repo]  # keyed by nickname
     workload: WorkloadConfig
+    theme: str  # empty string = no preference (default Textual palette)
 
 
 def validate_repo_path(raw: str) -> Path:
@@ -399,6 +475,14 @@ def load() -> Config:
             f"(got {hours_per_day})."
         )
 
+    # Top-level `theme = "ben10"`. "default" / empty / missing → no preference;
+    # the caller falls back to the standard Textual palette. Unknown names are
+    # accepted here and silently ignored at apply-time so a typo doesn't take
+    # down config-load.
+    theme = str(raw.get("theme", "")).strip()
+    if theme.lower() == "default":
+        theme = ""
+
     return Config(
         default_repo=default_repo,
         team_id=str(raw.get("team_id", "")).strip(),
@@ -406,6 +490,7 @@ def load() -> Config:
         token=str(raw.get("token", "")).strip(),
         repos=repos,
         workload=WorkloadConfig(hours_per_day=hours_per_day),
+        theme=theme,
     )
 
 

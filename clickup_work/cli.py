@@ -12,6 +12,7 @@ from clickup_work import __version__
 from clickup_work.actions_screen import ActionsContext
 from clickup_work.claude import build_prompt, launch
 from clickup_work.clickup import ClickUp, ClickUpError, Member, Task
+from clickup_work.themes import VALID_THEMES
 from clickup_work.config import (
     CONFIG_PATH,
     Config,
@@ -21,6 +22,7 @@ from clickup_work.config import (
     append_repo_block,
     load as load_config,
     resolve_repo,
+    save_theme,
     save_token,
     validate_repo_path,
     write_workload_capacity,
@@ -907,6 +909,11 @@ def run(
     except ConfigError as e:
         return _die(str(e))
 
+    # Final theme resolution: caller already merged CLI flag + env var into
+    # `theme`; if still empty, fall back to config.toml's preference.
+    if not theme:
+        theme = cfg.theme or None
+
     token = os.environ.get("CLICKUP_API_TOKEN", "").strip() or cfg.token
     if not token:
         return _die(
@@ -1272,6 +1279,9 @@ def _run_cmd(argv: list[str]) -> int:
         prompt_assign=not args.no_assign,
         skip_confirm=args.yes,
         use_tui=not args.no_tui,
+        # Precedence: CLI flag wins, then env var, then config — config-load
+        # happens inside run(), so we pass the already-resolved CLI/env value
+        # and let run() merge it with cfg.theme when both are missing.
         theme=args.theme or os.environ.get("CLICKUP_WORK_THEME"),
     )
 
@@ -1471,6 +1481,11 @@ def _workload_report_cmd(argv: list[str]) -> int:
     except ConfigError as e:
         return _die(str(e))
 
+    # Fall back to config.toml's persisted preference when neither flag nor
+    # env var supplied a theme.
+    if not theme:
+        theme = cfg.theme or None
+
     token = os.environ.get("CLICKUP_API_TOKEN", "").strip() or cfg.token
     if not token:
         return _die(
@@ -1587,6 +1602,69 @@ def _workload_set_capacity_cmd(argv: list[str]) -> int:
     return 0
 
 
+def _theme_cmd(argv: list[str]) -> int:
+    """`clickup-work theme [NAME]` — show current theme or persist a new one.
+
+    No arg: prints the current value (and where it came from), plus the list
+    of registered themes. With arg: writes ``theme = "NAME"`` to
+    ``config.toml``. Pass ``default`` (or an empty string) to clear the
+    preference.
+    """
+    parser = argparse.ArgumentParser(
+        prog="clickup-work theme",
+        description="Show or set the persistent TUI theme in config.toml.",
+    )
+    parser.add_argument(
+        "name",
+        nargs="?",
+        help=(
+            "theme to persist (e.g. 'ben10'). Pass 'default' to clear the "
+            "preference. Omit to print the current setting."
+        ),
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"clickup-work {__version__}"
+    )
+    args = parser.parse_args(argv)
+
+    available = ", ".join(VALID_THEMES)
+
+    if args.name is None:
+        # Read-only mode: show what's set, in priority order.
+        env_val = os.environ.get("CLICKUP_WORK_THEME", "").strip()
+        try:
+            cfg = load_config()
+            cfg_val = cfg.theme
+        except ConfigError:
+            cfg_val = ""
+        print(f"available: {available}")
+        print(f"config.toml:        {cfg_val or '(unset → default)'}")
+        print(f"$CLICKUP_WORK_THEME: {env_val or '(unset)'}")
+        print()
+        print("precedence per run: --theme flag > $CLICKUP_WORK_THEME > config.toml")
+        return 0
+
+    name = args.name.strip()
+    if name and name.lower() != "default" and name not in VALID_THEMES:
+        return _die(
+            f"unknown theme '{name}'. available: {available}\n"
+            f"(no change made; pass 'default' to clear the preference.)"
+        )
+
+    try:
+        save_theme(name)
+    except ConfigError as e:
+        return _die(str(e))
+
+    if name == "" or name.lower() == "default":
+        print(f"✓ cleared theme preference in {CONFIG_PATH}.")
+        print("clickup-work will use the default Textual palette.")
+    else:
+        print(f"✓ theme set to '{name}' in {CONFIG_PATH}.")
+        print(f"override per-run with --theme default or $CLICKUP_WORK_THEME=default.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv) if argv is not None else sys.argv[1:]
     if argv and argv[0] == "add-repo":
@@ -1595,4 +1673,6 @@ def main(argv: list[str] | None = None) -> int:
         return _login_cmd(argv[1:])
     if argv and argv[0] == "workload":
         return _workload_cmd(argv[1:])
+    if argv and argv[0] == "theme":
+        return _theme_cmd(argv[1:])
     return _run_cmd(argv)
