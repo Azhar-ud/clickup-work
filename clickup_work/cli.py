@@ -1347,7 +1347,12 @@ def _workload_report_cmd(argv: list[str]) -> int:
     parser.add_argument(
         "--no-unestimated",
         action="store_true",
-        help="hide the 'tickets without a time estimate' section",
+        help="(plain mode only) hide the 'tickets without a time estimate' section",
+    )
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        help="force the plain-text report even when stdout is a TTY",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -1386,10 +1391,37 @@ def _workload_report_cmd(argv: list[str]) -> int:
         hours_per_day = cfg.workload.hours_per_day
 
     client = ClickUp(token)
+    # Resolve identity up-front so a 401 produces a one-line CLI error rather
+    # than a TUI that flashes open and immediately shows "error". The actual
+    # task fetch is deferred — the TUI runs it on mount, the plain path runs
+    # it inside its own spinner block below.
     try:
-        with Spinner("fetching open tickets") as sp:
+        with Spinner("authenticating") as sp:
             user_id = client.get_user_id()
             team_id = cfg.team_id or client.get_first_team_id()
+            sp.silent()
+    except ClickUpError as e:
+        return _die(str(e))
+
+    use_tui = not args.no_tui and sys.stdout.isatty() and sys.stdin.isatty()
+    if use_tui:
+        from clickup_work.tui import run_app
+
+        try:
+            run_app(
+                client=client,
+                team_id=team_id,
+                user_id=user_id,
+                list_id=cfg.list_id,
+                hours_per_day=hours_per_day,
+            )
+        except ClickUpError as e:
+            return _die(str(e))
+        return 0
+
+    # Plain-text fallback (--no-tui, pipes, redirects, CI).
+    try:
+        with Spinner("fetching open tickets") as sp:
             tasks = client.get_open_tasks(
                 team_id=team_id,
                 user_id=user_id,

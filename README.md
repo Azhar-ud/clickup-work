@@ -343,7 +343,13 @@ context.
 
 If your week is part-time, scattered, or being asked about by a PM, the
 `workload` subcommand answers "what's on your plate?" in one shot —
-without opening the ClickUp UI:
+without opening the ClickUp UI.
+
+By default, when stdout is a terminal, it launches a navigable **TUI**
+(arrow keys to move, `e` to set an estimate inline, `s` to change status,
+`enter` to open the ticket in your browser, `r` to refresh, `q` to quit).
+When stdout is piped or redirected — or you pass `--no-tui` — it falls
+back to a plain-text report:
 
 ```
 $ clickup-work workload
@@ -393,7 +399,8 @@ The default if absent is `8` (full-time). Weekly capacity is always
 | Flag | Purpose |
 |---|---|
 | `--hours-per-day HOURS` | Override capacity for this run only — does not write config |
-| `--no-unestimated` | Hide the "tickets without a time estimate" section |
+| `--no-tui` | Force the plain-text report even when stdout is a TTY |
+| `--no-unestimated` | (plain mode only) Hide the "tickets without a time estimate" section |
 
 ### How tickets land in each section
 
