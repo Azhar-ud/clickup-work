@@ -54,21 +54,53 @@ VALID_THEMES = ("default", *sorted(_THEMES.keys()))
 
 
 def apply_theme(app: App, theme_name: str | None) -> None:
-    """Register and activate ``theme_name`` on ``app``.
+    """Register every known theme + activate ``theme_name`` (if specified) +
+    wire a watcher that persists subsequent theme changes to ``config.toml``.
 
-    A name of ``None``, ``""``, or ``"default"`` is a no-op so callers can
-    pass through whatever the user/config produced without sanitising it.
-    Unknown names are silently ignored — failing the whole app over a bad
-    theme name is worse UX than just running with the default palette.
+    Why register all of them: Textual's command palette (``Ctrl+P``) lists
+    every theme passed to ``app.register_theme``. Registering ``ben10`` even
+    when the user hasn't activated it lets them discover it through
+    ``Ctrl+P → Change theme`` instead of having to know the CLI flag.
+
+    The persistence watcher fires whenever ``app.theme`` changes after mount
+    — typically because the user picked a different theme via ``Ctrl+P``.
+    Built-in Textual themes (``textual-dark``, ``textual-light``, etc.) are
+    mapped to our cleared / "default" state.
+
+    A theme name of ``None`` / ``""`` / ``"default"`` skips activation but
+    still does the registration + watcher wiring. Unknown custom names are
+    silently ignored at activation — better to fall back to the default
+    palette than crash the app over a typo.
     """
-    if not theme_name or theme_name == "default":
-        return
-    theme = _THEMES.get(theme_name)
-    if theme is None:
-        return
-    # register_theme is idempotent — calling it on every app boot is fine.
-    app.register_theme(theme)
-    app.theme = theme.name
+    for theme in _THEMES.values():
+        # register_theme is idempotent on the same name; safe to call every
+        # app boot.
+        app.register_theme(theme)
+
+    if theme_name and theme_name != "default":
+        theme = _THEMES.get(theme_name)
+        if theme is not None:
+            app.theme = theme.name
+
+    # init=False so we don't persist the initial textual-dark on startup of
+    # an unconfigured user. After mount, every change goes through this.
+    app.watch(app, "theme", _persist_theme_change, init=False)
+
+
+def _persist_theme_change(new_theme: str) -> None:
+    """Save the user's picked theme back to ``config.toml``. Silent on any
+    config-write failure — the user can always re-set via the CLI, and a
+    pop-up here would interrupt the visual change they just made.
+    """
+    from clickup_work.config import ConfigError, save_theme
+
+    # Textual's built-in themes all share the ``textual-`` prefix; treat
+    # picking any of them as "clear my custom preference".
+    persistable = "default" if new_theme.startswith("textual-") else new_theme
+    try:
+        save_theme(persistable)
+    except ConfigError:
+        pass
 
 
 # ---- Omnitrix banner ----------------------------------------------------

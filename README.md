@@ -234,6 +234,10 @@ clickup-work workload set-capacity 4               # save 4h/day to config
 clickup-work theme                                 # show current + available
 clickup-work theme ben10                           # persist for every run
 clickup-work theme default                         # clear the preference
+
+# Or pick visually inside any TUI surface — Ctrl+P opens Textual's command
+# palette; pick "Change theme" → ben10 (or any of the 20+ built-in themes
+# Textual ships). The choice persists to config.toml automatically.
 ```
 
 ### Full flag list
