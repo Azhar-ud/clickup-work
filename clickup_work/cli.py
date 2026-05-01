@@ -976,18 +976,39 @@ def run(
     except GitError as e:
         return _die(str(e))
 
-    # Confirm the base branch interactively when the user didn't already
-    # pin it via --base. Default = the resolved value, so one Enter keeps
-    # the fast path; typing a name overrides for branches like `dev`,
-    # `staging`, or release lines.
-    if base_override is None:
-        chosen = _prompt_base_branch(base)
-        if chosen != base:
-            base = chosen
-            base_source = "interactive prompt"
-
     branch = branch_name(task, repo, prefix_override)
-    _print_plan(task, repo, base, base_source, branch)
+
+    # TUI plan screen replaces the bare `[main]:` prompt + plain `_print_plan`
+    # when stdout is interactive. Plain mode (--no-tui, pipes) keeps the
+    # original behavior unchanged so scripts and CI runs are stable.
+    plan_tui = use_tui and sys.stdin.isatty() and sys.stdout.isatty()
+    if plan_tui:
+        from clickup_work.plan_screen import PlanInputs, run_plan
+
+        chosen_base = run_plan(
+            PlanInputs(
+                task=task,
+                repo_name=repo.name,
+                repo_path=str(repo.path),
+                base_branch=base,
+                base_source=base_source,
+                branch_name=branch,
+            )
+        )
+        if chosen_base is None:
+            print("cancelled.")
+            return 0
+        if chosen_base != base:
+            base = chosen_base
+            base_source = "plan screen"
+    else:
+        # Plain-text flow: confirm base via bare prompt, then print plan.
+        if base_override is None:
+            chosen = _prompt_base_branch(base)
+            if chosen != base:
+                base = chosen
+                base_source = "interactive prompt"
+        _print_plan(task, repo, base, base_source, branch)
 
     # Safety check: confirm the base actually exists on origin BEFORE any git ops.
     # This catches typos, renamed defaults, and missing branches.
@@ -1077,6 +1098,36 @@ def run(
             f"        git push --force-with-lease"
         )
 
+    post_tui = use_tui and sys.stdin.isatty() and sys.stdout.isatty()
+    if post_tui:
+        from clickup_work.post_flow import PostFlowInputs, run_post_flow
+
+        try:
+            merges_now = merge_commits_ahead(repo.path, base)
+        except GitError:
+            merges_now = 0
+
+        run_post_flow(
+            PostFlowInputs(
+                client=client,
+                team_id=team_id,
+                user_id=user_id,
+                task=task,
+                repo_path=repo.path,
+                branch=branch,
+                base=base,
+                commits_ahead=ahead,
+                merge_commits_ahead=merges_now,
+                draft=draft,
+                pr_body_builder=lambda commits: pr_body(task, commits),
+                prompt_status=prompt_status,
+                prompt_time=prompt_time,
+                prompt_assign=prompt_assign,
+            )
+        )
+        return 0
+
+    # Plain-text post-Claude path.
     if not skip_confirm and not _confirm(f"push branch and open {label}? [Y/n] "):
         print(
             f"skipping push. branch '{branch}' is local; "
