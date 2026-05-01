@@ -254,7 +254,7 @@ clickup-work theme default                         # clear the preference
 | `--no-assign` | Skip the "reassign to which member?" prompt after the PR opens |
 | `--yes`, `-y` | Skip the "push branch and open PR?" confirmation prompt |
 | `--no-tui` | Drop to the plain-text flow (fzf or numbered picker, bare prompts) |
-| `--theme NAME` | Visual theme for the TUI: `default` (textual-dark) or `ben10` (Omnitrix-green palette + scrolling-binary banner on the picker). Also reads `$CLICKUP_WORK_THEME` and `theme = "..."` in `config.toml` (set with `clickup-work theme ben10`). Precedence: flag > env > config. |
+| `--theme NAME` | Visual theme for the TUI: `default` (textual-dark) or `ben10` (Omnitrix-green palette + frosted-glass Omnitrix hourglass watermark centered behind the picker). Also reads `$CLICKUP_WORK_THEME` and `theme = "..."` in `config.toml` (set with `clickup-work theme ben10`). Precedence: flag > env > config. |
 | `--dry-run` | Preview the ticket + plan, touch nothing |
 | `--verbose`, `-v` | Print every HTTP request and shell command |
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Container, Vertical
 from textual.widgets import Footer, Header, Input, ListItem, ListView, Static
 
 from clickup_work.actions_screen import (
@@ -24,7 +24,7 @@ from clickup_work.actions_screen import (
     TicketActionsScreen,
 )
 from clickup_work.clickup import Task
-from clickup_work.themes import OmnitrixBanner, apply_theme
+from clickup_work.themes import OmnitrixWatermark, apply_theme
 
 _PRIORITY_COLOR = {
     "urgent": "bold red",
@@ -136,6 +136,15 @@ class TicketPickerApp(App[Task | None]):
 
     CSS = """
     Screen { layout: vertical; }
+    /* Wrap the ticket list and the watermark so they share one layered
+       container. Layers only z-order siblings *inside* the same container —
+       putting them at Screen scope made the watermark eat the vertical
+       layout. Here, both children claim 100%/100% inside #list-stack and
+       overlap. */
+    /* align: center middle positions the fixed-size watermark in the
+       middle; the ListView ignores it (100%/100% fills regardless). */
+    #list-stack { height: 1fr; layers: ui watermark; align: center middle; }
+    #list-stack > #picker-list { layer: ui; height: 100%; width: 100%; }
     #filter-bar {
         height: 3;
         padding: 0 1;
@@ -147,10 +156,11 @@ class TicketPickerApp(App[Task | None]):
         border: none;
     }
     #picker-list {
-        height: 1fr;
         border: round $surface;
         padding: 0 1;
+        background: transparent;
     }
+    #picker-list ListItem { background: transparent; }
     #picker-list:focus-within { border: round $accent; }
     .picker-row { padding: 0 1; }
     .picker-row.-empty { color: $text-muted; }
@@ -193,12 +203,16 @@ class TicketPickerApp(App[Task | None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
-        if self._theme == "ben10":
-            yield OmnitrixBanner()
         with Vertical(id="filter-bar"):
             yield Input(placeholder="type to filter · / to refocus · esc to clear",
                         id="filter-input")
-        yield ListView(id="picker-list")
+        # The watermark + ListView share one layered container so the
+        # watermark sits behind the rows without consuming layout space
+        # outside this region (header/filter-bar/footer stay solid).
+        with Container(id="list-stack"):
+            if self._theme == "ben10":
+                yield OmnitrixWatermark()
+            yield ListView(id="picker-list")
         yield Static("", id="status", classes="status-bar")
         yield Footer()
 

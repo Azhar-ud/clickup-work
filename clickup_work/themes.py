@@ -103,66 +103,63 @@ def _persist_theme_change(new_theme: str) -> None:
         pass
 
 
-# ---- Omnitrix banner ----------------------------------------------------
+# ---- Omnitrix watermark -------------------------------------------------
 
-# A 64-char binary string that loops cleanly. Resampling from a longer seed
-# every tick gives the impression of a scrolling marquee without keeping
-# rolling state per cell. Hand-crafted so the digit distribution looks
-# "noisy" rather than periodic.
-_BINARY_SEED = (
-    "0110100101101001010101101001100110100101100101101001011001011010"
-    "1001011010010110101001100110101100110100101100110100101100101101"
+# Hourglass shape inside a circular faceplate, drawn with light-shade blocks
+# (``░``) so the result reads as frosted glass rather than a solid sticker.
+# Each row is the same width so the centred render lines up cleanly. The
+# hourglass narrows row-by-row to a single character at the waist, then
+# widens again — same shape as the Omnitrix face on Ben's wrist.
+_OMNITRIX_ART = (
+    "       ╭───────────╮       \n"
+    "      ╱             ╲      \n"
+    "     │  ░░░░░░░░░░░  │     \n"
+    "     │   ░░░░░░░░░   │     \n"
+    "     │    ░░░░░░░    │     \n"
+    "     │     ░░░░░     │     \n"
+    "     │      ░░░      │     \n"
+    "     │       ░       │     \n"
+    "     │      ░░░      │     \n"
+    "     │     ░░░░░     │     \n"
+    "     │    ░░░░░░░    │     \n"
+    "     │   ░░░░░░░░░   │     \n"
+    "     │  ░░░░░░░░░░░  │     \n"
+    "      ╲             ╱      \n"
+    "       ╰───────────╯       "
 )
 
-# Title row content. The double-arrows on either side of "BEN 10 · OMNITRIX"
-# evoke the Omnitrix hourglass without trying to draw the full faceplate
-# (which never reads cleanly at 1-cell resolution).
-_TITLE_TEXT = "▼▼▼  BEN 10 · OMNITRIX  ▲▲▲"
 
+class OmnitrixWatermark(Static):
+    """Frosted-glass Omnitrix faceplate centred behind the picker UI.
 
-class OmnitrixBanner(Static):
-    """3-line marquee: scrolling binary on top + bottom, Omnitrix title row in
-    the middle. Ticks once every ~150 ms via :meth:`Widget.set_interval` so
-    the binary digits visibly drift without burning CPU.
+    Rendered on a dedicated ``watermark`` layer so the filter bar, ticket
+    list, status row, and footer compose on top. The chrome around those
+    widgets is set ``background: transparent`` here so the dim green
+    watermark bleeds through the gaps and behind the row text.
+
+    Why ``░`` instead of ``█``: the light-shade block reads as a translucent
+    overlay against the near-black theme background, which is the "glass"
+    feel we want. Solid blocks turn it into a sticker that competes with
+    the foreground text.
     """
 
     DEFAULT_CSS = """
-    OmnitrixBanner {
-        height: 3;
-        padding: 0;
-        color: $accent;
-        background: $background;
+    OmnitrixWatermark {
+        layer: watermark;
+        /* Fixed size matching the ASCII art so we only obscure cells the
+           watermark actually paints. Textual composites topmost-wins per
+           cell — there's no real alpha — so a full-screen watermark would
+           block listview text even in the space cells. Sized to the art,
+           only the 27×15 footprint is touched. */
+        width: 27;
+        height: 15;
+        background: transparent;
+        /* Very dim green so the symbol reads as a watermark behind the
+           bright-green ticket rows that pass through its footprint. */
+        color: #1a4400;
         text-align: center;
-        border-bottom: heavy $accent;
     }
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__("", **kwargs)
-        self._offset = 0
-
-    def on_mount(self) -> None:
-        self._draw()
-        # 150 ms feels lively without distracting from typing.
-        self.set_interval(0.15, self._tick)
-
-    def _tick(self) -> None:
-        self._offset = (self._offset + 1) % len(_BINARY_SEED)
-        self._draw()
-
-    def _draw(self) -> None:
-        # Pull two windows: the second one is the seed reversed so the bottom
-        # row drifts the opposite direction. Slightly cooler than both
-        # scrolling the same way.
-        loop = _BINARY_SEED + _BINARY_SEED
-        rev = (_BINARY_SEED[::-1]) * 2
-        # `self.size.width` may be 0 before the first layout pass — guard so
-        # the first draw still renders something.
-        width = max(40, self.size.width or 60)
-        top = loop[self._offset : self._offset + width]
-        bot = rev[self._offset : self._offset + width]
-        self.update(
-            f"[dim]{top}[/]\n"
-            f"[bold]{_TITLE_TEXT.center(width)}[/]\n"
-            f"[dim]{bot}[/]"
-        )
+        super().__init__(_OMNITRIX_ART, **kwargs)
